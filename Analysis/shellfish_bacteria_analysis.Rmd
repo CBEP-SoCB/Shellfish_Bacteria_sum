@@ -1,0 +1,1132 @@
+---
+title: "Analysis of Shellfish Pathogen Data"
+author: "Curtis C. Bohlen, Casco Bay Estuary Partnership."
+date: "02/17/2021"
+output:
+  github_document:
+    toc: true
+    fig_width: 5
+    fig_height: 4
+---
+<img
+    src="https://www.cascobayestuary.org/wp-content/uploads/2014/04/logo_sm.jpg"
+    style="position:absolute;top:10px;right:50px;" />
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = 'center',
+                      fig.width = 5, fig.height = 4,
+                      collapse = TRUE, comment = "#>")
+```
+
+# Introduction
+Exploratory analysis highlights the extreme skewness of the distribution of
+bacteria data, both here with the shellfish -related data collected by DMR, and 
+with the data related to recreational beaches, collected by towns, and managed
+by DEP. Skewness means these data are difficult to analyze with any authority, and so
+a degree of humility is called for in interpreting any  analyses.
+
+Our primary goal is to be able to assess if there are important predictors of
+elevated bacteria levels that we can discern, and especially to identify if
+some sites are unusually vulnerable to elevated bacteria levels. Here we follow 
+a strategy used in looking at the Beaches data, of looking at several imperfect
+modeling strategies to examine patterns.
+
+Another notebook will directly address modeling of exceedances of relevant
+standards.  Here we focus on site to site variation, and relationships to 
+a few covariates.
+
+# Relevant Standards
+## Growing Area Classification Standards
+Growing Area Classification | Activity Allowed |	Geometric mean FC/100ml	| 90th Percentile (P90) FC/100ml
+----------------------------|------------------|--------------------------|-------------------------------
+Approved	               | Harvesting allowed	                                                      | ≤ 14	              | ≤ 31
+Conditionally Approved	 | Harvesting allowed except during specified conditions	                  | ≤ 14 in open status	| ≤ 31 in open status
+Restricted	             | Depuration harvesting or relay only	                                    | ≤ 88 and >15	      | ≤ 163 and >31
+Conditionally Restricted |Depuration harvesting or relay allowed except during specified conditions	| ≤ 88 in open status	| ≤ 163 in open status
+Prohibited	             | Aquaculture seed production only	                                        | >88	                |>163
+
+So, critical levels for Geometric Mean include:
+$<=14$ and  $<= 88$
+and for the p90
+$< 31$ and $<= 163$
+
+## Maine State Class SB Waters Standards
+Maine's water quality criteria includes an additional standard, which applies
+only indirectly to these data:  
+> the number of enterococcus bacteria in these waters may not exceed a geometric
+  mean of 8 CFU per 100   milliliters in any 90-day interval or 54 CFU per 100
+  milliliters in more than 10% of the samples in any 90-day interval.
+  
+  38 M.R.S. §465-B(2)(B)
+
+A "90 day interval" might apply to a summer's worth of data, but in most years 
+that will only represent a handful of observations at each site. Also note that
+this standard is written in terms of "enterococci", not "*E. coli* or 
+"coliforms".
+
+# Load Libraries
+```{r libraries}
+library(readr)
+library(fitdistrplus)  # For cullen-fray graph etc.
+
+library(tidyverse)  # Loads another `select()`
+
+library(emmeans)   # For marginal means
+
+library(VGAM)      # For Pareto GLMs and estimation.
+library(mgcv)      # For GAMs, here used principally for hierarchical models
+
+library(CBEPgraphics)
+load_cbep_fonts()
+theme_set(theme_cbep())
+
+library(LCensMeans)
+
+```
+
+# Load Data
+## Main Data
+```{r load_main}
+sibfldnm <- 'Derived_Data'
+parent <- dirname(getwd())
+sibling <- file.path(parent,sibfldnm)
+fl1<- "Shellfish data 2015 2018.csv"
+path <- file.path(sibling, fl1)
+
+coli_data <- read_csv(path, 
+    col_types = cols(SDate = col_date(format = "%Y-%m-%d"), 
+        SDateTime = col_datetime(format = "%Y-%m-%dT%H:%M:%SZ"), # Note Format!
+        STime = col_time(format = "%H:%M:%S"))) %>%
+  mutate_at(c(4:8), factor) %>%
+  mutate(Class = factor(Class, levels = c( 'A', 'CA', 'CR',
+                                           'R', 'P', 'X' ))) %>%
+  mutate(Tide = factor(Tide, levels = c("L", "LF", "F", "HF",
+                                        "H", "HE", "E", "LE"))) %>%
+  mutate(DOY = as.numeric(format(SDate, format = '%j')),
+         Month = as.numeric(format(SDate, format = '%m'))) %>%
+  mutate(Month = factor(Month, levels = 1:12, labels = month.abb))
+```
+
+### Address Censored Data
+Right censored values are sufficiently rare as to be relatively unimportant
+we leave the undressed, but address left censored values.  Interval Censored 
+values add complexity, but are unlikely in our setting to sharply alter 
+qualitative conclusions, so we chose not to address them.
+
+We first calculate a estimated conditional mean to replace the (left) censored
+values. The algorithm is not entirely appropriate, as it assumes lognormal
+distribution, and our data are closer to Pareto-distributed.  Still, it handles
+the non-detects on a more rational basis than the usual conventions.
+
+Second, we calculate a version of the data where non-detects are replaced by
+half the value of the detection limit.  However, we plan to use the LOG of
+fecal coliform counts in Gamma GLM models, which require response variables to be 
+strictly positive. The most common Reporting Limit in these data is `RL == 2`. 
+Half of that is 1.0, and `log(1.0) == 0`.  Consequently, we replace all 
+values 1.0 with 1.1, as log(1.1) is positive, and thus can be modeled by
+a gamm GLM.
+
+As a reminder, `ColiVal` simply includes the censored values at their reporting 
+limit, providing a third alternative for handling non-detects.
+
+```{r treat_censored}
+coli_data <- coli_data %>%
+  mutate(ColiVal_ml = sub_cmeans(ColiVal, LCFlag)) %>%
+  mutate(ColiVal_hf = if_else(LCFlag, ColiVal/2, ColiVal),
+         ColiVal_hf = if_else(ColiVal_hf == 1, 1.1, ColiVal_hf))
+```
+
+```{r plot_censored}
+ggplot(coli_data, aes(x = ColiVal, y = ColiVal_ml, color = LCFlag)) +
+  geom_point() +
+  xlim(0,25) +
+  ylim(0,25)
+```
+
+Almost all censored values were at 2.
+
+```{r}
+coli_data %>%
+  filter(ColiVal == 2, LCFlag) %>%
+  pull(ColiVal_ml) %>%
+  summary
+```
+
+So, our (lognormal) based estimator for censored values estimates a non-detect 
+at somewhere around 0.61 CF per 100 ml.  Because data has substantially heavier
+tails than a lognormal distribution, that estimate is probably an overestimate 
+of more realistic conditional expectation.
+
+### Remove NAs
+```{r remove_na}
+coli_data <- coli_data %>%
+  filter (! is.na(ColiVal))
+```
+
+## Weather Data
+We simplify the weather data somewhat.
+```{r load_weather_data}
+sibfldnm    <- 'Original_Data'
+parent      <- dirname(getwd())
+sibling     <- file.path(parent,sibfldnm)
+
+fn <- "Portland_Jetport_2015-2019.csv"
+fpath <- file.path(sibling, fn)
+
+weather_data <- read_csv(fpath, 
+ col_types = cols(AWNDattr = col_skip(), 
+        FMTM = col_skip(), FMTMattr = col_skip(), 
+        PGTM = col_skip(), PGTMattr = col_skip(),
+        PRCPattr = col_character(), SNOWattr = col_character(), 
+        SNWD = col_skip(), SNWDattr = col_skip(),
+        TAVG = col_number(), TAVGattr = col_character(), 
+        TMIN = col_number(), TMINattr = col_character(), 
+        TMAX = col_number(), TMAXattr = col_character(), 
+        station = col_skip())) %>%
+  select(! starts_with('W')) %>%
+  select(! ends_with('attr')) %>%
+  rename(sdate = date,
+         Precip=PRCP,
+         MaxT = TMAX,
+         MinT= TMIN,
+         AvgT = TAVG,
+         Snow = SNOW) %>%
+  mutate(sdate = as.Date(sdate, format = '%m/%d/%Y'))
+```
+
+```{r clean_weather_data}
+weather_data <- weather_data %>%
+  arrange(sdate) %>%
+  
+  select(sdate, Precip, AvgT, MaxT) %>%
+  mutate(AvgT = AvgT / 10,
+         MaxT = MaxT / 10,
+         Precip = Precip / 10,
+         Precip_d1 = dplyr::lag(Precip,1),
+         Precip_d2 = dplyr::lag(Precip,2),
+         Log1Precip    = log1p(Precip), 
+         Log1Precip_d1 = log1p(Precip_d1),
+         Log1Precip_d2 = log1p(Precip_d2),
+         Log1Precip_2   = log1p(Precip_d1 + Precip_d2),
+         Log1Precip_3   = log1p(Precip + Precip_d1 + Precip_d2))
+```
+
+## Incorporate Weather Data
+```{r join_weather}
+coli_data <- coli_data %>%
+  left_join(weather_data, by = c('SDate' = 'sdate'))
+```
+
+## Remove Sites not in Region
+We have some data that was selected for stations outside of Casco Bay. To be  
+careful, we  remove sampling data for any site in th two adjacent Growing Areas,
+"WH" and "WM".
+
+```{r remove_out_of_region}
+coli_data <- coli_data %>%
+  filter(GROW_AREA != 'WH' & GROW_AREA != "WM") %>%
+  mutate(GROW_AREA = fct_drop(GROW_AREA))
+```
+
+# Preliminary Graphics
+
+**Critical levels (Reminder)**  
+Geometric Mean include:  
+$<=14$ and  $<= 88$  
+and for the p90  
+$< 31$ and $<= 16$   
+
+## Histogram
+```{r histogram, fig.width = 7}
+ggplot(coli_data, aes(ColiVal_ml)) +
+  geom_histogram(fill = cbep_colors()[5]) +
+  geom_vline(xintercept = 14, lty = 3, col = 'blue') +
+  geom_vline(xintercept = 31, lty = 2, col = 'blue') +
+  geom_vline(xintercept = 88, lty = 3) +
+  geom_vline(xintercept = 163, lty = 2) +
+  scale_x_log10() +
+
+  theme_cbep(base_size = 10)
+```
+
+As for the Beaches data:  
+1.  Non detects are highly abundant.  
+2.  Violations of standards are relatively rare.   
+
+(Dotted lines apply to Geometric Mean; Dashed lines apply to P90. Roughly
+speaking, the Blue lines are for the boundary between open and restricted, black
+lines are for the boundary between restricted and prohibited.)
+
+```{r histogram_double_log, fig.width = 7}
+ggplot(coli_data, aes(ColiVal_ml)) +
+  geom_histogram(fill = cbep_colors()[5]) +
+  geom_vline(xintercept = 14, lty = 3, col = 'blue') +
+  geom_vline(xintercept = 31, lty = 2, col = 'blue') +
+  geom_vline(xintercept = 88, lty = 3) +
+  geom_vline(xintercept = 163, lty = 2) +
+  scale_x_log10() +
+  scale_y_log10() +
+
+  theme_cbep(base_size = 10)
+```
+
+And that looks very much like a linear relationship on a log-log plot,
+suggesting a gamma or Pareto distribution is appropriate.  Prior exploratory 
+analysis suggests a Pareto Distribution is better, but that adds considerable
+complexity to interpreting model results because of the available modeling 
+tools.
+
+## Pareto Fit?
+```{r pareto_fit}
+paretofit = vglm(ColiVal_ml~ 1, paretoII(location = 0) , data = coli_data)
+parms <- exp(coef(paretofit))
+names(parms) <- c('Scale', 'Shape')
+parms
+#predict(paretofit, newdata = data.frame(x = 1))
+```
+
+```{r plot_pareto_fit}
+ggplot(coli_data,aes(x = ColiVal_ml)) +
+  geom_histogram(aes( y = ..density..)) +
+  geom_vline(xintercept = 14, lty = 3, col = 'blue') +
+  geom_vline(xintercept = 31, lty = 2, col = 'blue') +
+  geom_vline(xintercept = 88, lty = 3) +
+  geom_vline(xintercept = 163, lty = 2) +
+  scale_x_log10() +
+  scale_y_log10() +
+
+  theme_cbep(base_size = 10) +
+  
+  geom_function(fun = dparetoII,
+                 args = list(location = 0,
+                             scale = parms[[1]],
+                             shape = parms[[2]]),
+                 color = 'red')
+```
+
+So we have a scaling problem, but the overall pattern does not look wildly
+inappropriate....
+
+## Simple Time Plot
+### Create Geometric Mean Function
+```{r gm_mean_function}
+gm_mean <- function(x) {
+  exp(mean(log(x), na.rm = TRUE))
+}
+```
+
+### Plot
+```{r time_plots, fig.width = 7}
+ggplot(coli_data, aes(YEAR, ColiVal_ml)) +
+  geom_jitter(alpha = 0.5) +
+  ## We use the MEAN here because `stat_summary()` works on data after
+  ## applying the transformation to the y axis, thus implicitly calculating the
+  ## geometric mean.
+  stat_summary(fun = mean, fill = 'red', shape = 23) +
+
+  geom_hline(yintercept = 14, lty = 3, col = 'blue') +
+  geom_hline(yintercept = 31, lty = 2, col = 'blue') +
+  geom_hline(yintercept = 88, lty = 3) +
+  geom_hline(yintercept = 163, lty = 2) +
+
+  scale_y_log10() +
+
+  theme_cbep(base_size = 10)
+```
+
+# Data Summaries
+```{r summaries}
+cat('\nNon-detects at Detection Limit\n')
+summary(coli_data$ColiVal)
+cat('\n     Geometric Mean\n')
+exp(mean(log(coli_data$ColiVal)))
+cat('\n\n')
+
+cat('\nNon-detects at maximum likelihood estimator\n')
+summary(coli_data$ColiVal_ml)
+cat('\n     Geometric Mean\n')
+exp(mean(log(coli_data$ColiVal_ml)))
+```
+
+Note that the medians are right at the detection limits (or our re-casting of
+those to handle non-detects).  Also, the 75th percentile is at 4.0, just double 
+the detection limit.
+
+## Summary Statistics Dataframe
+```{r summary_data_frame}
+sum_data <- coli_data %>%
+  mutate(logcoli = log(ColiVal),
+         logcoli2 = log(ColiVal_ml)) %>%
+  group_by(Station) %>%
+  summarize(mean1 = mean(ColiVal),
+            median1 = median(ColiVal),
+            iqr1 = IQR(ColiVal),
+            p901 = quantile(ColiVal, 0.9),
+            meanlog1 = mean(logcoli, na.rm = TRUE),
+            sdlog1 = sd(logcoli, na.rm = TRUE),
+            nlog1 = sum(! is.na(logcoli)),
+            selog1 = sdlog1/sqrt(nlog1),
+            gmean1 = exp(meanlog1),
+            U_CI1 = exp(meanlog1 + 1.96 * selog1),
+            L_CI1 = exp(meanlog1 - 1.96 * selog1),
+            
+            mean2 = mean(ColiVal_ml),
+            median2 = median(ColiVal_ml),
+            iqr2 = IQR(ColiVal_ml),
+            p902 = quantile(ColiVal_ml, 0.9),
+            meanlog2 = mean(logcoli2, na.rm = TRUE),
+            sdlog2 = sd(logcoli2, na.rm = TRUE),
+            nlog2 = sum(! is.na(logcoli2)),
+            selog2 = sdlog1/sqrt(nlog2),
+            gmean2 = exp(meanlog2),
+            U_CI2 = exp(meanlog2 + 1.96 * selog2),
+            L_CI2 = exp(meanlog2 - 1.96 * selog2)) %>%
+  mutate(Station = fct_reorder(Station, gmean2))
+```
+
+### Graphic
+```{r plot_summaries, fig.height = 7}
+plt <- ggplot(sum_data, aes(gmean2, Station)) + 
+  geom_pointrange(aes(xmin = L_CI2, xmax = U_CI2),
+                  color = cbep_colors()[4],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2))
+plt
+```
+
+# Modeling
+Overall, we focus on models that explore differences among sampling stations.
+Under that principal goal, we examine:
+
+1.  Impact of rainfall on those station by station estimates; 
+2.  Examination of  differences among DMR Growing Areas, as a convenient summary
+    for regional patterns
+4.  Seasonal patterns.
+
+Modeling here emphasizes understanding of patterns, not estimation, as results
+in State  of Casco Bay will emphasize observed metrics, like geometric means.
+
+We use three different methods: linear models, gamma generalized linear models, 
+and hierarchical models, developed through GAMs with random effects. 
+
+## Simple Log Linear Model
+Although we think a simple linear model is inappropriate given the highly skewed 
+data, we look at it anyway as a starting point for analysis.
+
+```{r plot_simple_lm}
+test_lm <- lm(log(ColiVal_ml) ~ Station, data = coli_data)
+plot(test_lm)
+```
+
+The model fails to address extreme values.  You see clear relationships between 
+location and scale.  Some of the pattern reflects the discrete nature of the 
+lower observations.  A better model might need t explicitly model interval
+censored data.
+
+```{r}
+anova(test_lm)
+```
+
+As suspected, the comparisons are highly significant.  Stations differ.
+
+We have a significant challenge here figuring out how to address or even
+display what are essentially thousands of pairwise comparisons.  We use 
+`emmeans()` as a convenient way to extract station by station estimates and
+standard errors.  We use `type = 'response'` to generate estimated geometric 
+means and 95% confidence intervals.
+
+```{r emms_lm}
+emms <- summary(emmeans(test_lm, "Station", type = 'response')) %>%
+  arrange(response) %>%
+  mutate(Station =fct_reorder(Station, response)) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+### Graphic
+```{r plot_lm_emms, fig.height = 7}
+plt <- ggplot(emms, aes(geom_mean, Station)) + 
+  geom_pointrange(aes(xmin = lower.CL, xmax = upper.CL),
+                  color = cbep_colors()[4],
+                  size = .2) +
+ 
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+```
+
+So only one site has estimated long-term geometric mean that exceeds the
+geometric mean standard between
+
+```{r plot_lm_emms_plus}
+plt +
+  stat_summary(fun = mean, mapping = aes(x=ColiVal_ml, y=Station), 
+               data = coli_data,
+               fill = 'red', shape = 23)
+```
+
+So our model regenerates the observed geometric means, as expected.
+
+## Linear Rainfall Model
+Most likely, a rainfall predictor would be useful.  We assemble rainfall data
+based on NOAA weather data.  Rainfall data is **also** highly skewed, so we 
+focus on the and look at the log of rainfall.  Our predictors are log of the
+prior day's rainfall, the log of the current day's rainfall, and the log of from the prior two 
+days.
+
+We have multiple possible predictors. If we take them one at a time, which is 
+best?
+
+```{r rain_lm_compare}
+rain_lm_1 <- lm(log(ColiVal_ml) ~ Station + Log1Precip,  data = coli_data)
+rain_lm_2 <- lm(log(ColiVal_ml) ~ Station + Log1Precip_d1,  data = coli_data)
+rain_lm_3 <- lm(log(ColiVal_ml) ~ Station + Log1Precip_d2,  data = coli_data)
+rain_lm_4 <- lm(log(ColiVal_ml) ~ Station + Log1Precip + Log1Precip_d1,
+                data = coli_data)
+rain_lm_5 <- lm(log(ColiVal_ml) ~ Station + Log1Precip + 
+                  Log1Precip_d1 + Log1Precip_d2,
+                data = coli_data)
+```
+
+```{r anovas_compare}
+anova(rain_lm_1, rain_lm_2, rain_lm_3, rain_lm_4, rain_lm_5)
+rm(rain_lm_1, rain_lm_2, rain_lm_3, rain_lm_4, rain_lm_5)
+
+```
+
+Rainfall is highly significant.  The best single predictor is based on the 
+previous day's rainfall (Model 2) adding the current day's rainfall helps a bit
+more.  Including the current day's rainfall also helps.
+but the reduction in sums of squares.
+
+```{r rain_lm}
+rain_lm <- lm(log(ColiVal_ml) ~ Station + Log1Precip + 
+                Log1Precip_d1, data = coli_data)
+```
+
+```{r pull_rain_coefs}
+summary(rain_lm)$coefficients[239:240,]
+```
+
+So conditions are more dependent on the prior day's rainfall.  
+
+#### Extract Adjusted Station by Station Estimates
+Note that we specify marginal means calculated for a day without rainfall,
+rather than for a day with "average" rainfall, which would be higher, or a day
+with median rainfall. We could have used `cov.reduce = median`, since median
+rainfall **was** zero, but that could lead to inconsistent models with other
+data.
+
+```{r emms_rain_lm}
+emms <- summary(emmeans(rain_lm, "Station", type = 'response',
+                        at = list(LogPrecip_d1 = 0, LogPrecip = 0))) %>%
+  arrange(response) %>%
+  mutate(Station =fct_reorder(Station, response)) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+### Graphic
+```{r plot_rain_lm_emms, fig.height = 7}
+plt <- ggplot(emms, aes(geom_mean, Station)) + 
+  geom_pointrange(aes(xmin = lower.CL, xmax = upper.CL),
+                  color = cbep_colors()[4],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+```
+
+#### Check Relationship with Geometric Means
+```{r plot_rain_lm_emms_plus}
+plt +
+  stat_summary(fun = mean, mapping = aes(x=ColiVal_ml, y=Station), 
+               data = coli_data,
+               fill = 'red', shape = 23)
+```
+
+The match is not perfect anymore, as expected since the MLEs now are corrected
+for recent rainfall, but the correlation is close.  Note that the confidence
+intervals are wider than the scatter among geometric means, so differences 
+among sites dominate, but rainfall still matters.
+
+## Selection of GLM Family
+Preliminary analyses suggested that models were more successful predicting
+the log of bacteria levels.  Bacteria levels appear to be distributed close to a
+(censored) Pareto distribution.
+
+Modeling based on log transformed data has the advantage of meaning our models
+readily generate geometric means, to which the regulations are linked.
+
+Even after log-transformation, however, our data is highly skewed, so we need a 
+GLM that can handle skewed data.  Usually, gamma and inverse Gaussian GLMs are 
+recommended for skewed (positive continuous) data. 
+
+We explored both gamma GLMs and inverse Gaussian GLMs.  Both can handle skewed 
+data but are restricted to  data that ranges over the positive real numbers. For 
+the negative binomial GLMs, we examined several link functions, (1/mu^2,
+inverse, identity). Results for all alternative GLMs were qualitatively similar.  
+
+The inverse Gaussian models perform relatively poorly (based on model diagnostic 
+plots), so we focus on models based on the Gamma GLM (or Gamma GAM).
+
+Log transform of counts are positive, except for count = 0, where the log is
+undefined.  (Given our interest in interpreting results in terms of the geometric
+mean, we do not want to add one to all counts to avoid zeros.) 
+
+The effect is that we are restricted with regards to how we handle 
+non-detects.  There are several conventions regarding appropriate analysis of 
+non-detects:
+
+1.  Replace non-detects with their reporting limits;  
+2.  Replace non-detects with zero;  
+3.  Replace non-detects with half the reporting limit;  
+4.  Replace non-detects with a statistically-based estimate of missing values.
+
+While we generally prefer (4), we can not use that here, as reasonable MLE
+estimates of the conditional means of (unobserved) non-detects are below 1,
+which would lead to negative logs.  Similarly, we can not go with (2).  Both
+(1) and (3) are viable alternatives.  (1) uses `ColiVal', and (3) uses
+`ColiVal_hf`.  
+
+We found, however, that the gamma GLM can not readily handle the log of our
+count data if we replace our non-detects by the value 1 (which is half the
+reporting limit).  The reason, of course, is that `log(1) == 0`, and the
+canonical link function for a gamma GLM is the inverse, so the value of 1
+returns an infinite link function, making the GLM model unstable.  Even when we
+replace `ND <- 1` with `ND <- 1.1`, the GLM has trouble fitting some fairly
+simple models.
+
+We therefore largely fall back on alternative (1), which we usually avoid.
+Again, qualitative results do not change much, but model stability improves.
+
+## Simple Gamma GLM
+Note that we are NOT using  non-detect corrected data here, because it includes
+values below 1, which leads to log of values below 0, which the gamma models
+can not handle.
+
+```{r gamma_glm}
+gamma_glm <- glm(log(ColiVal) ~ Station, 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r diagnostics_gamma_glm}
+boot::glm.diag.plots(gamma_glm)
+```
+
+That addresses the extreme values more successfully than our linear models, but
+not entirely. The scale-location relationship remains, but has been reduced in
+importance and partially reversed.
+
+```{r emms_gamma_glm}
+emms <- summary(emmeans(gamma_glm, "Station", type = 'response')) %>%
+  arrange(response) %>%
+  mutate(Station =fct_reorder(Station, response)) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+#### Graphic
+```{r plot_glm_emms, fig.height = 7}
+plt <- ggplot(emms, aes(geom_mean, Station)) + 
+  geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL),
+                  color = cbep_colors()[4],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+
+plt
+```
+
+Qualitatively, that is similar to results from the linear model, with confidence 
+intervals that scale with the geometric means, which makes sense both with
+these data and with a gamma model.
+
+```{r plot_glm_emms_plus, fig.height = 7}
+plt +
+   stat_summary(fun = mean, mapping = aes(x=ColiVal, y=Station), 
+                data = coli_data,
+                fill = 'red', shape = 23)
+```
+
+So the predicted values still match the observed geometric means.  Note that
+these geometric means are slightly higher than the ones produced by fitting 
+our non-detect corrected data, or fitting the version with non-detects scaled
+to half the nominal reporting limit, since we are replacing the non-detects
+with their reporting limits here.
+
+## Inverse Gaussian GLM
+```{r inverse_gaussian_glm}
+ig_glm <- glm(log(ColiVal) ~ Station, 
+                family = inverse.gaussian(), 
+                data = coli_data)
+```
+
+```{r diagnostics_ig_glm}
+boot::glm.diag.plots(ig_glm)
+```
+
+The inverse Gaussian GLMs do slightly better addressing the location-scale
+relationship.  But residuals are larger, more heavily skewed, and contain a
+"kink" that apparently depends on how we handle the non-detects. We prefer the 
+gamma models, and continue examining only those models.
+
+## Rainfall Gaussian GLM
+We focus on a model that includes information on rainfall from the prior day and 
+the day of sampling (guided by our linear model analysis).
+
+```{r rain_glm}
+rain_glm <- glm(log(ColiVal) ~ Station + Log1Precip + 
+                Log1Precip_d1, 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r diagnostics_rain_glm}
+boot::glm.diag.plots(rain_glm)
+```
+
+That leaves us with a distribution of residuals with a light lower tail, but
+we also create some moderately high leverage values, and increase a few 
+elevated residuals.  Judging by what we saw in the Beaches data, those elevated
+residuals probably arise because of high values that do not correspond to high 
+rainfall, or moderate levels that correspond to very high rainfall.
+
+```{r}
+summary(rain_glm)$coefficients[239:240,]
+```
+
+Previous day's precipitation has more effect on current conditions than
+present-day precipitation. (Note that because the link function here is an 
+inverse, a negative value implies the response is increasing).
+
+### Results
+Note this is the first place our selection of how we specify marginal means
+are likely to be important.  We fit for days with 0 recent rainfall. 
+
+```{r emms_rain_glm}
+emms2 <- summary(emmeans(rain_glm, "Station", type = 'response',
+                        at = list(LogPrecip_d1 = 0, LogPrecip = 0))) %>%
+  arrange(response) %>%
+  mutate(Station = fct_reorder(Station, response),
+         GROW_AREA = coli_data$GROW_AREA[match(Station, coli_data$Station)]) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+### Graphic
+We add colors by DMR Grow Region.  This makes the graphic more confusing. It
+shows clear differences among regions, so it was worth trying.
+
+```{r plot_rain_gam_emms, fig.height = 7}
+plt <- ggplot(emms2, aes(geom_mean, Station)) + 
+  geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL, color = GROW_AREA),
+                  #color = cbep_colors()[4],
+                  size = .2) +
+  
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  ylab('Location') +
+  
+  scale_color_manual(values = cbep_colors()) +
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+```
+
+Qualitatively, that is similar to results from the prior model.
+
+```{r plot_rain_gam_emms_plus, fig.height = 7}
+plt +
+   stat_summary(fun = mean, mapping = aes(x=ColiVal, y=Station), 
+                data = coli_data,
+                fill = 'red', shape = 23)
+```
+
+In this case, our estimated marginal means shifted below the observed 
+geometric means.  This is expected, as we have chosen to estimate marginal
+means for a day with no recent rainfall.  The effect is fairly large for a few 
+high geometric mean sites.  It's not clear if that is a modeling artifact 
+or reflects the possibility that sites with higher geometric means were (by 
+chance?) sampled more after rain.
+
+## Growing Regions GAM
+We clearly have a hierarchical model here, with Stations nested within Growing
+Areas.  It is appropriate to treat the Stations (in this setting) as random
+factors within Growing Areas. So we fit this as a GAM model, using a random 
+effects smoother.A functionally similar model could be fit with `lme()` or
+`lmer()`
+```{r grow_gam, cache = TRUE}
+grow_gam <- gam(log(ColiVal) ~ GROW_AREA + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r}
+anova(grow_gam)
+```
+
+We see that grow area is a statistically significant predictor of geometric mean
+levels of fecal coliforms at the different stations.
+
+###  Plot
+```{r plot_grow_gam}
+plot(grow_gam)
+```
+
+This plot shows the magnitude of the random effects.  IDeally, these residuals
+should be close to normally distributed.  here we note that they are somewhat
+skewed, but not excessively so.
+
+```{r}
+summary(grow_gam)
+```
+
+Because the link function is the inverse, a lower value here implies a 
+higher geometric mean. The default base case here is `GROW_AREA == "HI"`.
+That is the highest bacteria region, with the other regions showing generally
+lower concentrations.  Pairwise coefficients are not individually 
+significant (or in one case marginally so).
+
+```{r emms_grow_gam_prelim}
+myemms <- emmeans(grow_gam, "GROW_AREA",
+                         nesting = "Station %in% GROW_AREA")
+
+pwpp(myemms)
+rm(myemms)
+```
+
+So, in pairwise comparisons, "WI" has lower linear predictor (higher response) 
+than all the other sites.  In addition.," "WK" is significantly worse off than
+"WJ" and nearly significantly worse of f than "WL".
+
+(Results are less clear cut if we analyze ColiVal_hf, where we replace 
+non-detects by half their value, but  then the model is unstable.)
+
+```{r emms_grow_gam}
+emms3 <- summary(emmeans(grow_gam, "GROW_AREA", type = 'response',
+                         nesting = "Station %in% GROW_AREA")) %>%
+  arrange(response) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+emms3
+```
+
+Note that although we have statistically significant differences among regions,
+the actual bacteria levels are low, and differences are quantitatively small.
+Error bars on the estimated geometric means are smaller than the plotting 
+symbols.
+
+### Graphic
+```{r plot_grow_emms, fig.width = 6}
+plt <- ggplot(emms3, aes(GROW_AREA, geom_mean)) + 
+  geom_jitter(data = coli_data, mapping = aes(x = GROW_AREA, 
+                                             y = ColiVal,
+                                             color = LCFlag),
+              alpha = 0.25) +
+  geom_line(aes(x = as.numeric(GROW_AREA)), color = 'red') +
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  color = 'red', size = .75, shape = 17) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  ylab('Geometric Mean Fecal Coliforms \n(CFU / 100ml)') +
+  xlab('DMR Growing Area') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+plt
+```
+
+## Seasonal Model
+We chose to use a hierarchical mixed model here as well, because measurements 
+collected at any single Station are correlated.  This makes the model akin to a 
+repeated measures model. An equivalent model could be fit with `lmer()` or 
+`lme()`.
+
+```{r month_gam, cache = TRUE}
+month_gam <- gam(log(ColiVal) ~ Month + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+This model failed to converge cleanly when fit against `ColiVal_hf`.  
+We do not see those problems when fitting the uncorrected data, as here.  That
+suggests that our model (a gamma fit, with inverse link on log transformed
+data) has trouble with fitting the values of the non-detects when we replace 
+non-detects with a value of 1.
+
+Those warnings suggest problems with convergence.  That is not all that
+surprising, since both rainfall and fecal coliform levels are highly skewed -- and
+the correlations between them, while important, are not perfect.
+
+```{r diagnostics_month_gam}
+plot(month_gam)
+```
+
+The random effects are again skewed.
+
+```{r}
+summary(month_gam)
+```
+
+The summary shows a strong seasonal pattern, with winter months with generally
+high coefficients ( == low geometric means), that are significantly different
+from conditions in the late summer and fall.
+
+### Pairwise Comparisons
+```{r emms_moth_gam_prelim}
+myemms <- emmeans(month_gam, "Month")
+
+pwpp(myemms) 
+rm(myemms)
+```
+
+The overall pattern is that June through November tend to not differ (although
+each of those two months are sometimes different from one or another month).
+December through May also tend to not differ, 
+
+### Results
+```{r, emms_month_gam}
+emms4 <- summary(emmeans(month_gam, "Month", type = 'response',
+                        at = list(LogPrecip_d1 = 0, LogPrecip = 0))) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+emms4
+```
+
+Again, note how low the geometric means are.
+
+### Graphic
+```{r plot_month_emms, fig.width = 6}
+plt <- ggplot(emms4, aes(Month, geom_mean)) + 
+  geom_jitter(data = coli_data, mapping = aes(x = Month, 
+                                             y = ColiVal,
+                                             color = LCFlag),
+              alpha = 0.25) +
+  geom_line(aes(x = as.numeric(Month)), color = 'red') +
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  color = 'red', size = .75, shape = 17) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  ylab('Fecal Coliforms \n(CFU / 100ml)') +
+  xlab('DMR Growing Area') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom')
+plt
+```
+
+```{r plot_month_emms_with}
+plt +
+   stat_summary(fun = mean, mapping = aes(y=ColiVal, x=Month), 
+                data = coli_data,
+                fill = 'yellow', shape = 23)
+```
+
+Estimated values are not exactly equal to observed geometric means.  That is
+expected, since the model estimates are corrected for sampling histories of
+different Stations.
+
+## Full Seasonal (DOY) model
+We fit a cyclic smoother to the Day of the Year.  Selection
+of the degree of smoothing is a bit of an arbitrary call, but we
+generally prefer to underfit rather than overfit GAM smoothers.  The default 
+fit used almost eight degrees of freedom, and it fit what looked like a few too 
+many wiggles for a reasonable seasonal pattern.  We try six knots, for a 
+slightly smoother fit.
+
+```{r DOY_gam}
+doy_gam <- gam(log(ColiVal) ~ s(DOY, k = 6, bs = 'cc') + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+Recall that the linear predictor for our gamma GLM is the inverse.
+
+```{r plot_doy_gam}
+plot(doy_gam)
+```
+
+```{r}
+summary(doy_gam)
+```
+
+We want to compare predicted values and standard errors to observed values.
+We can use predict to get estimates, but we have to get them for all stations
+and average.  The provided estimates of standard error, therefore, are 
+not correct, as they track only between station error, not within station
+error.
+
+```{r construct_predict_df}
+s <- unique(coli_data$Station)
+l = length(s)
+df <- data.frame(DOY = rep(1:365, l), Station = rep(s, each = 365))
+
+p <- predict(doy_gam, newdata = df)
+
+p <- tibble(fit = p) %>%
+  mutate(DOY = rep(1:365, l), 
+         Station = rep(s, each = 365)) %>%
+  group_by(DOY) %>%
+  summarize(mean_lp = mean(fit),
+            sd_lp = sd(fit),
+            mean_response = 1/mean_lp,
+            upper_response = 1/(mean_lp + 1.96* sd_lp),
+            lower_response = 1/(mean_lp - 1.96* sd_lp),
+            gmean = exp(mean_response),
+            upper_gmean = exp(upper_response),
+            lower_gmean = exp(lower_response))
+```
+
+```{r plot_doy_gam_predicts}
+ggplot(coli_data, aes(DOY, ColiVal)) +
+  geom_jitter(alpha = 0.1, height = 0.01) +
+  geom_line(data = p, mapping = aes(x = DOY, y = gmean), 
+             color = 'red', size = 1) +
+  scale_y_log10()
+```
+
+## Pareto Models
+We were unable to run a Pareto model successfully under `VGAM`.
+```{r pareto_glm, error = TRUE}
+tmp <- coli_data %>%
+  filter (! is.na(ColiVal))
+pareto_vglm <- vglm(ColiVal ~ Station, 
+                    paretoII, data = tmp,
+                    maxit = 50)
+anova.vglm(pareto_vglm)
+rm(tmp)
+```
+
+## Nonparametric Tests
+We proceed to a nonparametric analysis. This is useful for a one way analysis, 
+but does not lend itself to testing more complex models.
+
+```{r kruskal_test}
+kruskal.test(ColiVal_ml ~ Station, data = coli_data)
+```
+
+Although the Kruskal-Wallis test is not strictly a comparison of medians, it's 
+close, so we look at medians again. 
+
+```{r summary_again}
+sum_data %>%
+  mutate(Station = fct_reorder(Station, median2)) %>%
+  
+  ggplot(aes(median2, Station)) +
+  geom_point() +
+
+  scale_x_log10() + 
+
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2))
+```
+
+Note how many of those medians are at (or very close to) discrete values
+determined by the methods involved.  **Most** sites **almost always** are below
+detection limits or at very low levels.
+
+### Pairwise Wilcoxon test
+Although a pairwise analysis is possible, it is not very informative with so 
+many stations.
+
+The following is moderately slow.... Many warnings are produced, all saying 
+exact p values are not possible with tied values -- of which we have many.
+
+The giant cross classification matrix is hard to parse, so this is not 
+especially useful without a lot more work.  We don't need it, as results will
+generally confirm that some Stations are different from others, which we know. 
+
+```{r wilcox, warnings = FALSE}
+res <- suppressWarnings(
+    pairwise.wilcox.test(coli_data$ColiVal_ml,
+                         coli_data$Station,
+                         p.adjust.method = "holm"))
+```
+
+Differences among sites are statistically meaningful, but pairwise comparisons
+are too numerous to be especially informative.  Some sites differ from others, 
+but other than that, it's hard to summarize.
+
+# Output Table for GIS
+```{r}
+sum_data %>%
+  select(Station, median1, iqr1, gmean1, p901, nlog1, 
+                  median2, iqr2, gmean2, p902, nlog2 ) %>%
+  rename(median = median1,
+         igr = iqr1, 
+         gmean = gmean1, 
+         p90 = p901,
+         nlog = nlog1,
+         
+         median_ml = median2, 
+         iqr_ml = iqr2,
+         gmean_ml = gmean2, 
+         p90_ml = p902, 
+         nlog_ml = nlog2) %>%
+  write.csv('bacteria_summaries.csv')
+```

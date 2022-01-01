@@ -1,0 +1,785 @@
+---
+title: "Graphics Summarizing Shellfish Bacteria Data"
+author: "Curtis C. Bohlen, Casco Bay Estuary Partnership."
+date: "02/17/2021"
+output:
+  github_document:
+    toc: true
+    fig_width: 5
+    fig_height: 4
+---
+<img
+    src="https://www.cascobayestuary.org/wp-content/uploads/2014/04/logo_sm.jpg"
+    style="position:absolute;top:10px;right:50px;" />
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = 'center',
+                      fig.width = 5, fig.height = 4,
+                      collapse = TRUE, comment = "#>")
+```
+
+# Introduction
+Exploratory analysis highlights the extreme skewness of the distribution of
+bacteria data, both here with the shellfish-related data collected by DMR, and 
+with the data related to recreational beaches, collected by towns, and managed
+by DEP.
+
+Here we present graphical summaries of the data, with an emphasis on reporting 
+observed quantities (like geometric means).  While we have conducted more
+sophisticated analyses in our data analysis notebooks, we use only a few
+results from modeling here.
+
+# Relevant Standards
+Growing Area Classification | Activity Allowed |	Geometric mean FC/100ml	| 90th Percentile (P90) FC/100ml
+----------------------------|------------------|--------------------------|-------------------------------
+Approved	               | Harvesting allowed	                                                      | ≤ 14	              | ≤ 31
+Conditionally Approved	 | Harvesting allowed except during specified conditions	                  | ≤ 14 in open status	| ≤ 31 in open status
+Restricted	             | Depuration harvesting or relay only	                                    | ≤ 88 and >15	      | ≤ 163 and >31
+Conditionally Restricted |Depuration harvesting or relay allowed except during specified conditions	| ≤ 88 in open status	| ≤ 163 in open status
+Prohibited	             | Aquaculture seed production only	                                        | >88	                |>163
+
+# Load Libraries
+```{r}
+library(readr)
+library(tidyverse)      # Loads another `select()`
+
+library(emmeans)        # For marginal means
+library(mgcv)           # For GAMs, here used principally for hierarchical models
+
+library(CBEPgraphics)
+load_cbep_fonts()
+theme_set(theme_cbep())
+
+library(LCensMeans)
+
+```
+
+# Load Data
+## Main Data
+```{r folders}
+sibfldnm <- 'Derived_Data'
+parent <- dirname(getwd())
+sibling <- file.path(parent,sibfldnm)
+
+dir.create(file.path(getwd(), 'figures'), showWarnings = FALSE)
+```
+
+```{r load_main_data)}
+fl1<- "Shellfish data 2015 2018.csv"
+path <- file.path(sibling, fl1)
+
+coli_data <- read_csv(path, 
+    col_types = cols(SDate = col_date(format = "%Y-%m-%d"), 
+        SDateTime = col_datetime(format = "%Y-%m-%dT%H:%M:%SZ"), # Note Format!
+        STime = col_time(format = "%H:%M:%S"))) %>%
+  mutate_at(c(6:7), factor) %>%
+  mutate(Class = factor(Class, levels = c( 'A', 'CA', 'CR',
+                                           'R', 'P', 'X' ))) %>%
+  mutate(Tide = factor(Tide, levels = c("L", "LF", "F", "HF",
+                                        "H", "HE", "E", "LE"))) %>%
+  mutate(DOY = as.numeric(format(SDate, format = '%j')),
+         Month = as.numeric(format(SDate, format = '%m'))) %>%
+  mutate(Month = factor(Month, levels = 1:12, labels = month.abb))
+```
+
+### Address Censored Data
+We  calculate a estimated conditional mean to replace the (left) censored
+values. The algorithm is not entirely appropriate, as it assumes lognormal
+distribution, and our data are closer to Pareto-distributed.  Still, it handles
+the non-detects on a more rational basis than the usual conventions.
+
+Second, we calculate a version of the data where non-detects are replaced by
+half the value of the detection limit.  However, we plan to use the LOG of
+*E. coli* counts in Gamma GLM models, which require response variables to be 
+strictly positive. The most common Reporting Limit in these data is `RL == 2`. 
+Half of that is 1.0, and `log(1.0) == 0`.  Consequently, we replace all 
+values 1.0 with 1.1, as log(1.1) is positive, and thus can be modeled by
+a suitable `gam()` model.
+
+In this notebook, we do not use either of these altered versions of the data,
+but instead rely only on results calculated assuming "non-detects" equal the 
+reporting limit.  This (obviously) over estimates the true (unobserved) values
+of the non-detects, but it is consistent, convenient, and transparent.
+
+```{r}
+coli_data <- coli_data %>%
+  mutate(ColiVal_ml = sub_cmeans(ColiVal, LCFlag)) %>%
+  mutate(ColiVal_hf = if_else(LCFlag, ColiVal/2, ColiVal),
+         ColiVal_hf = if_else(ColiVal_hf == 1, 1.1, ColiVal_hf))
+```
+
+### Remove NAs
+```{r}
+coli_data <- coli_data %>%
+  filter (! is.na(ColiVal))
+```
+
+### Remove Sites not in Region
+We have some data that was selected for stations outside of Casco Bay. To be  
+careful, we  remove sampling data for any site in th two adjacent Growing Areas,
+"WH" and "WM".
+```{r}
+coli_data <- coli_data %>%
+  filter(GROW_AREA != 'WH' & GROW_AREA != "WM") %>%
+  mutate(GROW_AREA = fct_drop(GROW_AREA),
+         Station = factor(Station))
+```
+
+## Weather Data
+We simplify the weather data somewhat.
+```{r load_weather_data}
+sibfldnm    <- 'Original_Data'
+parent      <- dirname(getwd())
+sibling     <- file.path(parent,sibfldnm)
+
+fn <- "Portland_Jetport_2015-2019.csv"
+fpath <- file.path(sibling, fn)
+
+weather_data <- read_csv(fpath, 
+ col_types = cols(AWNDattr = col_skip(), 
+        FMTM = col_skip(), FMTMattr = col_skip(), 
+        PGTM = col_skip(), PGTMattr = col_skip(),
+        PRCPattr = col_character(), SNOWattr = col_character(), 
+        SNWD = col_skip(), SNWDattr = col_skip(),
+        TAVG = col_number(), TAVGattr = col_character(), 
+        TMIN = col_number(), TMINattr = col_character(), 
+        TMAX = col_number(), TMAXattr = col_character(), 
+        station = col_skip())) %>%
+  select( ! starts_with('W')) %>%
+  select(! ends_with('attr')) %>%
+  rename(sdate = date,
+         Precip=PRCP,
+         MaxT = TMAX,
+         MinT= TMIN,
+         AvgT = TAVG,
+         Snow = SNOW) %>%
+  mutate(sdate = as.Date(sdate, format = '%m/%d/%Y'))
+```
+
+```{r}
+weather_data <- weather_data %>%
+  arrange(sdate) %>%
+  
+  select(sdate, Precip, AvgT, MaxT) %>%
+  mutate(AvgT = AvgT / 10,
+         MaxT = MaxT / 10,
+         Precip = Precip / 10,
+         Precip_d1 = dplyr::lag(Precip,1),
+         Precip_d2 = dplyr::lag(Precip,2),
+         Log1Precip    = log1p(Precip), 
+         Log1Precip_d1 = log1p(Precip_d1),
+         Log1Precip_d2 = log1p(Precip_d2),
+         Log1Precip_2   = log1p(Precip_d1 + Precip_d2),
+         Log1Precip_3   = log1p(Precip + Precip_d1 + Precip_d2))
+```
+
+### Incorporate Weather Data
+```{r}
+coli_data <- coli_data %>%
+  left_join(weather_data, by = c('SDate' = 'sdate'))
+```
+
+## Summary Statistics Dataframe
+```{r}
+sum_data <- coli_data %>%
+  mutate(logcoli = log(ColiVal),
+         logcoli2 = log(ColiVal_ml)) %>%
+  group_by(Station) %>%
+  summarize(mean1 = mean(ColiVal),
+            median1 = median(ColiVal),
+            iqr1 = IQR(ColiVal),
+            p901 = quantile(ColiVal, 0.9),
+            meanlog1 = mean(logcoli, na.rm = TRUE),
+            sdlog1 = sd(logcoli, na.rm = TRUE),
+            nlog1 = sum(! is.na(logcoli)),
+            selog1 = sdlog1/sqrt(nlog1),
+            gmean1 = exp(meanlog1),
+            U_CI1 = exp(meanlog1 + 1.96 * selog1),
+            L_CI1 = exp(meanlog1 - 1.96 * selog1),
+            
+            mean2 = mean(ColiVal_ml),
+            median2 = median(ColiVal_ml),
+            iqr2 = IQR(ColiVal_ml),
+            p902 = quantile(ColiVal_ml, 0.9),
+            meanlog2 = mean(logcoli2, na.rm = TRUE),
+            sdlog2 = sd(logcoli2, na.rm = TRUE),
+            nlog2 = sum(! is.na(logcoli2)),
+            selog2 = sdlog1/sqrt(nlog2),
+            gmean2 = exp(meanlog2),
+            U_CI2 = exp(meanlog2 + 1.96 * selog2),
+            L_CI2 = exp(meanlog2 - 1.96 * selog2)) %>%
+  mutate(Station = fct_reorder(Station, gmean1))
+
+```
+
+# Critical levels (Reminder)
+Geometric Mean include:  
+$<=14$ and  $<= 88$  
+and for the p90  
+$< 31$ and $<= 16$   
+
+# Years Plot
+```{r time_plot}
+plt <- ggplot(coli_data, aes(YEAR, ColiVal)) +
+  geom_jitter(aes(color = LCFlag), alpha = 0.25, height = 0.05, width = 0.4) +
+  ## We use the MEAN here because `stat_summary()` works on data after
+  ## applying the transformation to the y axis, thus implicitly calculating the
+  ## geometric mean.
+  stat_summary(fun = mean, 
+               fill = 'red', shape = 22) +
+  
+  scale_color_manual(values = cbep_colors(), name = '',
+                     labels = c('Observed', 'Below Detection')) +
+  
+  
+  xlab('') +
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+
+  scale_y_log10() +
+
+  theme_cbep(base_size = 12) +
+  theme(legend.position = "bottom") +
+  
+  guides(color = guide_legend(override.aes = list(alpha = c(0.5,0.75) ) ))
+```
+
+```{r years_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 2020, y = 17, 
+           size = 3, hjust = .75, label = "14 CFU") +
+  
+# geom_hline(yintercept = 88, lty = 2) +
+#  annotate('text', x = 2020, y = 110, 
+#           size = 3, hjust = .75, label = "88 CFU") +
+  scale_x_continuous(breaks = c(2015, 2017, 2019))
+
+ggsave('figures/years.pdf', device = cairo_pdf, 
+       width = 5, height = 4)
+
+```
+
+# Years Box and Years Violin
+```{r time_plot_violin}
+plt <- ggplot(coli_data, aes(YEAR, ColiVal, group = YEAR)) +
+  geom_violin(fill = cbep_colors()[2]) +
+  ## We use the MEAN here because `stat_summary()` works on data after
+  ## applying the transformation to the y axis, thus implicitly calculating the
+  ## geometric mean.
+  stat_summary(fun = mean, 
+               fill = 'red', shape = 22) +
+  xlab('') +
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+
+  scale_y_log10() +
+
+  theme_cbep(base_size = 12)
+```
+
+```{r years_violin_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 2020, y = 17, 
+           size = 3, hjust = .75, label = "14 CFU") +
+  
+ 
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 2020, y = 110, 
+           size = 3, hjust = .75, label = "88 CFU") +
+  scale_x_continuous(breaks = c(2015, 2017, 2019))
+
+ggsave('figures/years_violin.pdf', device = cairo_pdf, 
+       width = 5, height = 4)
+
+```
+
+```{r time_plot_box}
+plt <- ggplot(coli_data, aes(YEAR, ColiVal, group = YEAR)) +
+  geom_boxplot(fill = cbep_colors()[2]) +
+  ## We use the MEAN here because `stat_summary()` works on data after
+  ## applying the transformation to the y axis, thus implicitly calculating the
+  ## geometric mean.
+  stat_summary(fun = mean, 
+               fill = 'red', shape = 22) +
+  xlab('') +
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+
+  scale_y_log10() +
+
+  theme_cbep(base_size = 12)
+plt
+```
+
+# Graphic with "Naive" CI
+Since we do not truly think the log of our data in normally distributed, we
+do not think the naive normal distribution error bars are especially accurate.
+We could use bootstrapped confidence intervals here, but as sample size for
+each station is moderate ($n \approx 30$), that is also not a great strategy.
+
+```{r plot_summaries, fig.height = 5, fig.width = 3}
+plt <- ggplot(sum_data, aes(gmean1, Station)) + 
+  geom_pointrange(aes(xmin = L_CI1, xmax = U_CI1),
+                  color = cbep_colors()[6],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Fecal Coliforms\n(CFU / 100ml)') +
+
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+```
+
+# Bootstrapped 95% Confidence Intervals
+## Calculation of Bootstrap Confidence intervals
+This is a general function, so needs to be passed log transformed data 
+```{r bootstrap_ci}
+boot_one <- function (dat, fun = "mean", sz = 1000, width = 0.95) {
+  
+  low <- (1 - width)/2
+  hi <- 1 - low
+
+  vals <- numeric(sz)
+  for (i in 1:sz) {
+    vals[i] <- eval(call(fun, sample(dat, length(dat), replace = TRUE)))
+  }
+  return (quantile(vals, probs = c(low, hi)))
+}
+```
+
+```{r}
+boot_one(rpois(30, 2))
+```
+
+We need to first calculate confidence intervals on a log scale, then build a
+tibble and back transform them.
+```{r}
+CIs <- tapply(log(coli_data$ColiVal), coli_data$Station, boot_one)
+
+# Convert to data frame (and then tibble...) 
+CIs <- as.data.frame(do.call(rbind, CIs)) %>%
+  rename(lower1 = `2.5%`, upper1 = `97.5%`) %>%
+  rownames_to_column('Station')
+
+# Back Transform
+CIs <- CIs %>%
+  mutate(lower1 = exp(lower1),
+         upper1 = exp(upper1))
+```
+
+We add results to summary data. (Because this uses `left_join()`, rerunning it
+without deleting the old versions of lower1 and upper1 will generate errors
+in later steps.)
+```{r}
+sum_data <-  sum_data %>% 
+  left_join(CIs, by = 'Station') %>%
+  mutate(Station = fct_reorder(Station, gmean1))
+
+```
+
+## Compare Confidence Intervals
+Those confidence intervals look remarkably similar to teh ones generated with
+the normal approximation.
+```{r fig.width = 3, fig.height = 2}
+ggplot(sum_data, aes( L_CI1, lower1)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_cbep(base_size = 10) +
+  xlim(0,10) +
+  ylim(0,10)
+```
+```{r fig.width = 3, fig.height = 2}
+ggplot(sum_data, aes( U_CI1, upper1)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_cbep(base_size = 10) +
+  xlim(0,20) +
+  ylim(0,20)
+```
+So our bootstrapped confidence intervals are extremely close to the normal
+approximation confidence intervals.  It probably was not worth the effort....
+
+## Generate the Plot
+```{r station_bootstrap_graphics, fig.height = 5, fig.width = 3}
+plt <- ggplot(sum_data, aes(gmean1, Station)) + 
+  geom_pointrange(aes(xmin = lower1, xmax = upper1),
+                  color = cbep_colors()[6],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Fecal Coliforms\n(CFU / 100ml)') +
+
+  ylab('Location') +
+  
+  geom_vline(xintercept = 14, lty = 2) +
+  annotate('text', y = 30, x = 16, label = "14 CFU",
+           size = 3, hjust = 0, angle = 270) +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+
+ggsave('figures/stations_bootstrap.pdf', device = cairo_pdf, 
+       width = 3, height = 5)
+```
+
+# Model-Based Graphics
+We focus on gamma generalized linear models and mixed effects models, developed
+through GAMs with random effects. See the notebook
+`shellfish_bacteria_analysis.Rmd` for details and alternative models.
+
+## Selection of GLM Family
+Preliminary analyses suggested that models were more successful predicting
+the log of bacteria levels.  Bacteria levels appear to be distributed close to a
+(censored) Pareto distribution.
+
+Modeling based on log transformed data has the advantage of meaning our models
+readily generate geometric means, to which the regulations are linked.
+
+Even after log-transformation, however, our data is highly skewed, so we need a 
+GLM that can handle skewed data.  Usually, gamma and inverse Gaussian GLMs are 
+recommended for skewed (positive continuous) data. 
+
+Log transform of counts are positive, except for count = 0, where the log is
+undefined.  (Given our interest in interpreting results in terms of the geometric
+mean, we do not want to add one to all counts to avoid zeros.) 
+
+The gamma GLM can not readily handle the log of our
+count data if we replace our non-detects by the value 1 (which is half the
+reporting limit).  The reason, of course, is that `log(1) == 0`, and the
+canonical link function for a gamma GLM is the inverse, so the value of 1
+returns an infinite link function, making teh GLM model unstable.  Even when we
+replace `ND <- 1` with `ND <- 1.1`, the GLM has trouble fitting some fairly
+simple models.
+
+## Simple Gamma GLM
+Note that we are NOT using  non-detect corrected data here, because it includes
+values below 1, which leads to log of values below 0, which the gamma models
+can not handle.
+```{r gamma_glm}
+gamma_glm <- glm(log(ColiVal) ~ Station, 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r emms_gamma_glm}
+emms <- summary(emmeans(gamma_glm, "Station", type = 'response')) %>%
+  arrange(response) %>%
+  mutate(Station =fct_reorder(Station, response)) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+#### Graphic
+```{r plot_glm_emms, fig.width = 3, fig.height = 5}
+plt <- ggplot(emms, aes(geom_mean, Station)) + 
+  geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL),
+                  color = cbep_colors()[6],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  
+  xlab('Fecal Coliforms\n(CFU / 100ml)') +
+
+  ylab('Location') +
+  
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+
+plt
+
+ggsave('figures/stations_gamma.pdf', device = cairo_pdf, 
+       width = 3, height = 5)
+```
+Qualitatively, the main difference is that the confidence intervals for the sites
+with very low standard errors have been widened slightly.
+
+## Growing Regions GAM
+We clearly have a hierarchical model here, with Stations nested within Growing
+Areas.  It is appropriate to treat the Stations (in this setting) as random
+factors within Growing Areas. So we fit this as a GAM model, using a random 
+effects smoother.A functionally similar model could be fit with `lme()` or
+`lmer()`
+```{r grow_gam, cache = TRUE}
+grow_gam <- gam(log(ColiVal) ~ GROW_AREA + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r emms_grow_gam}
+emms3 <- summary(emmeans(grow_gam, "GROW_AREA", type = 'response',
+                         nesting = "Station %in% GROW_AREA")) %>%
+  arrange(response) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+#### Jitter Graphic
+```{r plot_grow_emms}
+plt <- ggplot(emms3, aes(GROW_AREA, geom_mean)) + 
+  geom_jitter(data = coli_data, mapping = aes(x = GROW_AREA, 
+                                             y = ColiVal,
+                                             color = LCFlag),
+              height = 0.05, width = 0.4,
+              alpha = 0.25) +
+
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  fill = 'red', size = .75, shape = 22) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+  xlab('DMR Growing Area') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom') +
+  
+  guides(color = guide_legend(override.aes = list(alpha = c(0.5,0.75) ) ))
+
+```
+
+```{r grow_emms_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 4.5, y = 17, 
+           size = 3, hjust = 1, label = "14 CFU") +
+  
+ 
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 4.5, y = 110, 
+           size = 3, hjust = 1, label = "88 CFU") +
+
+ggsave('figures/regions_jitter.pdf', device = cairo_pdf, 
+       width = 5, height = 4)
+
+```
+
+### Violin Plot Version
+```{r plot_grow_emms_violin}
+plt <- ggplot(emms3, aes(GROW_AREA, geom_mean)) + 
+  geom_violin(data = coli_data, mapping = aes(x = GROW_AREA, 
+                                             y = ColiVal),
+              fill = cbep_colors()[5]) +
+
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  fill = 'red', size = .75, shape = 22) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+  xlab('DMR Growing Area') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+```
+
+```{r grow_violin_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 4.5, y = 17, 
+           size = 3, hjust = .75, label = "14 CFU") +
+  
+ 
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 4.5, y = 110, 
+           size = 3, hjust = .75, label = "88 CFU")
+
+#ggsave('figures/regions_violin.pdf', device = cairo_pdf, 
+#       width = 5, height = 4)
+
+```
+
+## Seasonal GAM Model
+We chose to use a hierarchical mixed model here as well, because measurements 
+collected at any single Station are correlated.  This makes the model akin to a 
+repeated measures model. An equivalent model could be fit with `lmer()` or 
+`lme()`.
+```{r month_gam, cache = TRUE}
+month_gam <- gam(log(ColiVal) ~ Month + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r, emm_month}
+emms4 <- summary(emmeans(month_gam, "Month", type = 'response',
+                        at = list(LogPrecip_d1 = 0, LogPrecip = 0))) %>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+### Jitter Graphic
+```{r plot_month_emms}
+plt <- ggplot(emms4, aes(Month, geom_mean)) + 
+  geom_jitter(data = coli_data, mapping = aes(x = Month, 
+                                             y = ColiVal,
+                                             color = LCFlag),
+               height = 0.05, width = 0.4,
+               alpha = 0.25) +
+
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  fill = 'red', size = .75, shape = 22) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+
+  xlab('') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom') +
+  
+  guides(color = guide_legend(override.aes = list(alpha = c(0.5,0.75) ) ))
+
+```
+
+Add reference lines
+```{r month_emms_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 14, y = 17, 
+           size = 3, hjust = 1, label = "14 CFU") +
+  
+ 
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 14, y = 110, 
+           size = 3, hjust = 1, label = "88 CFU")
+
+#ggsave('figures/months_jitter.pdf', device = cairo_pdf, 
+#       width = 5, height = 4)
+```
+
+### Violin Plot Version
+```{r plot_month_emms_VIOLIN}
+plt <- ggplot(emms4, aes(Month, geom_mean)) + 
+  geom_violin(data = coli_data, mapping = aes(x = Month, 
+                                             y = ColiVal),
+              fill = cbep_colors()[5]) +
+
+  geom_pointrange(aes(ymin = lower.CL, ymax = upper.CL),
+                  fill = 'red', size = .75, shape = 22) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+  xlab('DMR Growing Area') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+```
+
+```{r grow_month_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 14, y = 17, 
+           size = 3, hjust = 1, label = "14 CFU") +
+  
+ 
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 14, y = 110, 
+           size = 3, hjust = 1, label = "88 CFU")
+
+
+#ggsave('figures/month_violin.pdf', device = cairo_pdf, 
+#       width = 5, height = 4)
+
+```
+
+## Full Seasonal (DOY) GAM Model
+We fit a cyclic smoother to the Day of the Year.  Selection
+of the degree of smoothing is a bit of an arbitrary call, but we
+generally prefer to underfit rather than overfit GAM smoothers.  The default 
+fit used almost eight degrees of freedom, and it fit what looked like a few too 
+many wiggles for a reasonable seasonal pattern.  We try six knots, for a 
+slightly smoother fit.
+```{r DOY_gam, cache = TRUE}
+doy_gam <- gam(log(ColiVal) ~ s(DOY, k = 6, bs = 'cc') + s(Station, bs = 're'), 
+                family = Gamma(), 
+                data = coli_data)
+```
+
+```{r}
+emms5 <- summary(emmeans(doy_gam, 
+                         'DOY', at = list(DOY = 1:365),
+                         type = 'response'))%>%
+  rename(geom_mean = response) %>%
+  as_tibble()
+```
+
+### Jitter Graphic
+```{r plot_doy_emms}
+plt <- ggplot(emms5, aes(DOY, geom_mean)) + 
+  geom_point(data = coli_data, mapping = aes(x = DOY, 
+                                             y = ColiVal,
+              color = LCFlag),
+              alpha = 0.25) +
+  geom_line(aes(x = as.numeric(DOY)), color = 'red', size = 1) +
+  geom_linerange(aes(ymin = lower.CL, ymax = upper.CL),
+                  color = 'red', size = .25, alpha = 0.25) +
+ 
+  scale_y_log10() +
+  scale_color_manual(values = cbep_colors(), name = '', 
+                     labels = c('Observed', 'Below Detection')) +
+  
+  scale_x_continuous(breaks = c(0,   31,  59,  90,  120, 151, 
+                                181, 212, 243, 273, 304, 334),
+                     labels = month.abb) +
+  
+  ylab(expression(atop(italic('E. coli'),
+                  '(CFU / 100ml)'))) +
+  xlab('') +
+  
+  theme_cbep(base_size = 12) +
+  theme(legend.position = 'bottom') +
+  theme(axis.text.x = element_text(size = 10, hjust = 0.25)) +
+
+  guides(color = guide_legend(override.aes = list(alpha = c(0.5,0.75) ) ))
+```
+
+Add reference lines
+```{r doy_emms_add_ref_lines}
+ plt +  
+  geom_hline(yintercept = 14, lty = 2) +
+  annotate('text', x = 415, y = 17, 
+           size = 3, hjust = 1, label = "14 CFU") +
+
+  geom_hline(yintercept = 88, lty = 2) +
+  annotate('text', x = 415, y = 110, 
+           size = 3, hjust = 1, label = "88 CFU")
+
+ggsave('figures/doy_point.pdf', device = cairo_pdf, 
+       width = 5, height = 4)
+```
