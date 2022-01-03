@@ -15,20 +15,38 @@ Curtis C. Bohlen, Casco Bay Estuary Partnership.
         -   [Incorporate Weather Data](#incorporate-weather-data)
     -   [Summary Statistics Dataframe](#summary-statistics-dataframe)
 -   [Critical levels (Reminder)](#critical-levels-reminder)
--   [Years Plot](#years-plot)
+-   [Years Plot for Geometric Means](#years-plot-for-geometric-means)
+-   [Years Plot for P90](#years-plot-for-p90)
 -   [Bootstrapped 95% Confidence
     Intervals](#bootstrapped-95-confidence-intervals)
-    -   [Calculation of Bootstrap Confidence
-        intervals](#calculation-of-bootstrap-confidence-intervals)
-    -   [Compare Confidence Intervals](#compare-confidence-intervals)
-    -   [Generate the Plot](#generate-the-plot)
+    -   [Bootstrap Confidence Interval
+        Function](#bootstrap-confidence-interval-function)
+    -   [Confidence Intervals for the Geometric
+        Mean](#confidence-intervals-for-the-geometric-mean)
+    -   [Confidence Intervals for the 90th
+        Percentile](#confidence-intervals-for-the-90th-percentile)
+    -   [Geometric Mean Plot](#geometric-mean-plot)
+    -   [p90 Plot](#p90-plot)
 -   [Model-Based Graphics](#model-based-graphics)
     -   [Selection of GLM Family](#selection-of-glm-family)
     -   [Simple Gamma GLM](#simple-gamma-glm)
     -   [Growing Regions GAM](#growing-regions-gam)
-        -   [Jitter Graphic](#jitter-graphic-1)
+    -   [Seasonal GAM Model](#seasonal-gam-model)
     -   [Full Seasonal (DOY) GAM Model](#full-seasonal-doy-gam-model)
-        -   [Jitter Graphic](#jitter-graphic-2)
+-   [Combined Graphics; Horizontal
+    Layout](#combined-graphics-horizontal-layout)
+    -   [Assemble Long Data](#assemble-long-data)
+    -   [Base Plot](#base-plot)
+        -   [Mimicing Graphic As Modified by the Graphic
+            Designer](#mimicing-graphic-as-modified-by-the-graphic-designer)
+        -   [Alternate Annotations](#alternate-annotations)
+    -   [Shapes with outlines Plot](#shapes-with-outlines-plot)
+        -   [Alternate Annotations](#alternate-annotations-1)
+        -   [Annotation Dataframe](#annotation-dataframe)
+-   [Combined Graphics: Vertical
+    Layout](#combined-graphics-vertical-layout)
+    -   [One Panel](#one-panel)
+    -   [Two Panels](#two-panels)
 
 <img
     src="https://www.cascobayestuary.org/wp-content/uploads/2014/04/logo_sm.jpg"
@@ -174,10 +192,8 @@ coli_data <- coli_data %>%
 sibfldnm    <- 'Data'
 parent      <- dirname(getwd())
 sibling     <- file.path(parent,sibfldnm)
-
 fn <- "Portland_Jetport_2015-2019.csv"
 fpath <- file.path(sibling, fn)
-
 weather_data <- read_csv(fpath, 
  col_types = cols(station = col_skip())) %>%
   select( ! starts_with('W')) %>%
@@ -256,7 +272,7 @@ Geometric Mean include:
 and for the p90  
  &lt; 31 and  &lt;  = 16
 
-# Years Plot
+# Years Plot for Geometric Means
 
 ``` r
 plt <- ggplot(coli_data, aes(YEAR, ColiVal)) +
@@ -298,11 +314,61 @@ ggsave('figures/years.pdf', device = cairo_pdf,
 #> Warning: Removed 5 rows containing missing values (geom_segment).
 ```
 
+# Years Plot for P90
+
+Technically, this produces a plot with summary statistics calculated on
+the log-transformed data. That means `stat_sumamry()` correctly displays
+the geometric mean. However the `quantile()` function finds (and plots)
+the 90th percentile of the LOG of the data, rather than the log
+transform of the 90th percentile of the untransformed data. Given the
+abundance of data here, that makes no practical difference in a graphic.
+
+``` r
+plt <- ggplot(coli_data, aes(YEAR, ColiVal)) +
+  geom_jitter(aes(color = LCFlag), alpha = 0.25, height = 0.05, width = 0.4) +
+  ## We use the MEAN here because `stat_summary()` works on data after
+  ## applying the transformation to the y axis, thus implicitly calculating the
+  ## geometric mean.
+  #stat_summary(fun = mean, 
+  #             fill = 'red', shape = 22) +
+  stat_summary(fun = ~ quantile(.x, 0.9),
+                fill = 'orange', shape = 23) +
+  scale_color_manual(values = cbep_colors(), name = '',
+                     labels = c('Observed', 'Below Detection')) +
+  xlab('') +
+  ylab('Fecal Coliforms\n(CFU / 100ml)') +
+  scale_y_log10() +
+  theme_cbep(base_size = 12) +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(alpha = c(0.5,0.75),
+                                                  size = 3) ))
+```
+
+``` r
+ plt +  
+  geom_hline(yintercept = 31, lty = 2) +
+  annotate('text', x = 2020, y = 40, 
+           size = 3, hjust = .75, label = "31 CFU") +
+  scale_x_continuous(breaks = c(2015, 2017, 2019))
+#> Warning: Removed 5 rows containing missing values (geom_segment).
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/years_p90_add_ref_lines-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/years.pdf', device = cairo_pdf, 
+       width = 5, height = 4)
+#> Warning: Removed 5 rows containing missing values (geom_segment).
+```
+
 # Bootstrapped 95% Confidence Intervals
 
-## Calculation of Bootstrap Confidence intervals
+## Bootstrap Confidence Interval Function
 
 This is a general function, so needs to be passed log transformed data
+to produce geometric means. note that we can substitute another function
+for the mean to generate confidence intervals for other statistics, here
+the 90th percentile.
 
 ``` r
 boot_one <- function (dat, fun = "mean", sz = 1000, width = 0.95) {
@@ -316,27 +382,54 @@ boot_one <- function (dat, fun = "mean", sz = 1000, width = 0.95) {
 }
 ```
 
-``` r
-boot_one(rpois(30, 2))
-#>     2.5%    97.5% 
-#> 1.533333 2.433333
-```
+## Confidence Intervals for the Geometric Mean
 
 We need to first calculate confidence intervals on a log scale, then
 build a tibble and back transform them.
 
 ``` r
-CIs <- tapply(log(coli_data$ColiVal), coli_data$Station, boot_one)
-
-# Convert to data frame (and then tibble...) 
-CIs <- as.data.frame(do.call(rbind, CIs)) %>%
-  rename(lower1 = `2.5%`, upper1 = `97.5%`) %>%
+gm_ci <- tapply(log(coli_data$ColiVal), coli_data$Station, boot_one)
+# Convert to data frame (and then tibble...)
+# This is convenient because as_tibble() drops the row names,
+# which we want to keep.
+gm_ci <- as.data.frame(do.call(rbind, gm_ci)) %>%
+  rename(gm_lower1 = `2.5%`, gm_upper1 = `97.5%`) %>%
   rownames_to_column('Station')
-
 # Back Transform
-CIs <- CIs %>%
-  mutate(lower1 = exp(lower1),
-         upper1 = exp(upper1))
+gm_ci <- gm_ci %>%
+  mutate(gm_lower1 = exp(gm_lower1),
+         gm_upper1 = exp(gm_upper1))
+```
+
+## Confidence Intervals for the 90th Percentile
+
+Because we use `eval()` and
+call()`inside the`boot\_one()`function, we need to pass the function we want to bootstrap as a string. We can't pass in an anonymous function.  The function`call()`assembles a call object (unevaluated).  It's first argument must be a character string.  Then`eval()\`
+evaluates the call, seeking the named function among function
+identifiers in the current environment.
+
+All of that could be addressed with more advanced R programming, such as
+quoting function parameters or passing additional parameters to the call
+object using R’s ellipsis operator (`...`). But for our current purpose,
+it is far simpler to write a named function rather than revise and
+generalize the `boot_one()` function. Besides, there are good packages
+to support bootstrapping available. If we needed a more capable
+bootstrap function, we would have used the `boot` package.
+
+``` r
+p90 <- function(.x) quantile(.x, 0.9)
+```
+
+This takes a while to run because calculating percentiles is harder than
+calculating the mean.
+
+``` r
+p90_ci <- tapply(coli_data$ColiVal, coli_data$Station,
+               function(d) boot_one(d, 'p90'))
+# Convert to data frame (and then tibble...) 
+p90_ci <- as.data.frame(do.call(rbind, p90_ci)) %>%
+  rename(p90_lower1 = `2.5%`, p90_upper1 = `97.5%`) %>%
+  rownames_to_column('Station')
 ```
 
 We add results to summary data. (Because this uses `left_join()`,
@@ -345,46 +438,16 @@ generate errors in later steps.)
 
 ``` r
 sum_data <-  sum_data %>% 
-  left_join(CIs, by = 'Station') %>%
+  left_join(gm_ci, by = 'Station') %>%
+  left_join(p90_ci, by = 'Station') %>%
   mutate(Station = fct_reorder(Station, gmean1))
 ```
 
-## Compare Confidence Intervals
-
-Those confidence intervals look remarkably similar to the ones generated
-with the normal approximation.
-
-``` r
-ggplot(sum_data, aes( L_CI1, lower1)) +
-  geom_point() +
-  geom_abline(slope = 1, intercept = 0) +
-  theme_cbep(base_size = 10) +
-  xlim(0,10) +
-  ylim(0,10)
-#> Warning: Removed 1 rows containing missing values (geom_point).
-```
-
-<img src="shellfish_bacteria_graphics_files/figure-gfm/unnamed-chunk-10-1.png" style="display: block; margin: auto;" />
-
-``` r
-ggplot(sum_data, aes( U_CI1, upper1)) +
-  geom_point() +
-  geom_abline(slope = 1, intercept = 0) +
-  theme_cbep(base_size = 10) +
-  xlim(0,20) +
-  ylim(0,20)
-#> Warning: Removed 1 rows containing missing values (geom_point).
-```
-
-<img src="shellfish_bacteria_graphics_files/figure-gfm/unnamed-chunk-11-1.png" style="display: block; margin: auto;" />
-So our bootstrapped confidence intervals are extremely close to the
-normal approximation confidence intervals.
-
-## Generate the Plot
+## Geometric Mean Plot
 
 ``` r
 plt <- ggplot(sum_data, aes(gmean1, Station)) + 
-  geom_pointrange(aes(xmin = lower1, xmax = upper1),
+  geom_pointrange(aes(xmin = gm_lower1, xmax = gm_upper1),
                   color = cbep_colors()[6],
                   size = .2) +
   scale_x_log10(breaks = c(1,3,10,30, 100)) +
@@ -415,10 +478,42 @@ ggsave('figures/stations_bootstrap.pdf', device = cairo_pdf,
        width = 3, height = 5)
 ```
 
+## p90 Plot
+
+``` r
+plt <- ggplot(sum_data, aes(p901, Station)) + 
+  geom_pointrange(aes(xmin = p90_lower1, xmax = p90_upper1),
+                  color = cbep_colors()[4],
+                  size = .2) +
+  scale_x_log10(breaks = c(1,3,10,30, 100)) +
+  xlab('90th Percentile Fecal Coliforms\n(CFU / 100ml)') +
+  ylab('Location') +
+  geom_vline(xintercept = 31, lty = 2) +
+  annotate('text', y = 30, x = 40, label = "31 CFU",
+           size = 3, hjust = 0, angle = 270) +
+  theme_cbep(base_size = 12) + 
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+plt
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/station_bootstrap_p90_graphics-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_p90_bootstrap.pdf', device = cairo_pdf, 
+       width = 3.25, height = 5)
+```
+
 # Model-Based Graphics
 
 We focus on gamma generalized linear models and mixed effects models,
-developed through GAMs with random effects. See the notebook
+developed through GAMs with random effects. The focus here is on showing
+the impact of various predictors on bacteria levels. See the notebook
 `shellfish_bacteria_analysis.Rmd` for details and alternative models.
 
 ## Selection of GLM Family
@@ -467,19 +562,14 @@ emms <- summary(emmeans(gamma_glm, "Station", type = 'response')) %>%
   as_tibble()
 ```
 
-#### Graphic
-
 ``` r
 plt <- ggplot(emms, aes(geom_mean, Station)) + 
   geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL),
                   color = cbep_colors()[6],
                   size = .2) +
   scale_x_log10(breaks = c(1,3,10,30, 100)) +
-  
   xlab('Fecal Coliforms\n(CFU / 100ml)') +
-
   ylab('Location') +
-  
   theme_cbep(base_size = 12) + 
   theme(axis.text.y = element_blank(),
         axis.ticks.y = element_blank(),
@@ -488,7 +578,6 @@ plt <- ggplot(emms, aes(geom_mean, Station)) +
         panel.grid.major.x = element_line(size = 0.5, 
                                           color = 'gray85', 
                                           linetype = 2)) 
-
 plt
 ```
 
@@ -524,8 +613,6 @@ emms3 <- summary(emmeans(grow_gam, "GROW_AREA", type = 'response',
   as_tibble()
 ```
 
-#### Jitter Graphic
-
 ``` r
 plt <- ggplot(emms3, aes(GROW_AREA, geom_mean)) + 
   geom_jitter(data = coli_data, mapping = aes(x = GROW_AREA, 
@@ -557,10 +644,13 @@ plt <- ggplot(emms3, aes(GROW_AREA, geom_mean)) +
 ```
 
 <img src="shellfish_bacteria_graphics_files/figure-gfm/grow_emms_add_ref_lines-1.png" style="display: block; margin: auto;" />
-\#\# Seasonal GAM Model We chose to use a hierarchical mixed model here
-as well, because measurements collected at any single Station are
-correlated. This makes the model akin to a repeated measures model. An
-equivalent model could be fit with `lmer()` or `lme()`.
+
+## Seasonal GAM Model
+
+We chose to use a hierarchical mixed model here as well, because
+measurements collected at any single Station are correlated. This makes
+the model akin to a repeated measures model. An equivalent model could
+be fit with `lmer()` or `lme()`.
 
 ``` r
 month_gam <- gam(log(ColiVal) ~ Month + s(Station, bs = 're'), 
@@ -574,8 +664,6 @@ emms4 <- summary(emmeans(month_gam, "Month", type = 'response',
   rename(geom_mean = response) %>%
   as_tibble()
 ```
-
-### Jitter Graphic
 
 ``` r
 plt <- ggplot(emms4, aes(Month, geom_mean)) + 
@@ -627,8 +715,8 @@ doy_gam <- gam(log(ColiVal) ~ s(DOY, k = 6, bs = 'cc') +
                 data = coli_data)
 ```
 
-We can’t use `emmeans()` here because of the high dimensionality of the
-model space. We calculate predictions directly.
+We can’t use `emmeans()` easily here because of the high dimensionality
+of the model. We calculate predictions directly.
 
 ``` r
 s <- unique(coli_data$Station)
@@ -650,8 +738,6 @@ p <- tibble(fit = p) %>%
             upper_gmean = exp(upper_response),
             lower_gmean = exp(lower_response))
 ```
-
-### Jitter Graphic
 
 ``` r
 plt <- ggplot(data = coli_data) +
@@ -699,4 +785,288 @@ Add reference lines.
 ``` r
 ggsave('figures/doy_point.pdf', device = cairo_pdf, 
        width = 5, height = 4)
+```
+
+# Combined Graphics; Horizontal Layout
+
+## Assemble Long Data
+
+``` r
+long_dat <- sum_data %>%
+  select(Station, gmean1, gm_lower1, gm_upper1, p901, p90_lower1, p90_upper1) %>%
+  rename(gm_value = gmean1, p90_value = p901) %>%
+  rename_with( ~sub('1', '', .x)) %>%
+  pivot_longer(gm_value:p90_upper,
+               names_to = c('parameter', 'type'), 
+               names_sep = '_') %>%
+  pivot_wider(c(Station, parameter), names_from = type, values_from = value) %>%
+  mutate(parameter = factor(parameter, 
+                            levels = c('p90', 'gm'), 
+                            labels = c('90th Percentile', 'Geometric Mean'))) %>%
+  arrange(parameter, Station)
+```
+
+## Base Plot
+
+``` r
+plt <- ggplot(long_dat, aes(Station, value)) + 
+
+  geom_linerange(aes(ymin = lower, ymax = upper, color = parameter),
+                 alpha = 0.25,
+                 size = .1) +
+  geom_point(aes(color = parameter), size = 0.75) + 
+               
+  scale_y_log10(labels = scales::comma) +
+  
+  scale_color_manual(name = '', values = cbep_colors()[c(6,4)]) +
+
+  ylab('Fecal Coliforms (CFU / 100ml)')+
+
+  xlab('Sampling Sites Around Casco Bay') +
+  expand_limits(x = 240) +  # this ensures the top dot is not cut off
+  
+  theme_cbep(base_size = 7) + 
+  theme(legend.position = c(.2, 0.8),
+        legend.text = element_text(size = 7),
+        legend.key.height = unit(1, 'lines'),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 7),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.y = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) +
+  guides(color = guide_legend(override.aes = list(lty = 0, size = 2)))
+```
+
+### Mimicing Graphic As Modified by the Graphic Designer
+
+``` r
+plt +
+   geom_hline(yintercept = 32, 
+             lty = 2, color = 'gray25') +
+  geom_hline(yintercept = 14, 
+             lty = 2, color = 'gray25') +
+  
+  annotate('text', x = 3, y = 40, label = '31 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[6]) +
+  annotate('text', x = 3, y = 18, label = '14 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[4])
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/bootstrap__graphic_1-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_one_revised.pdf', device = cairo_pdf, 
+       width = 4, height = 3)
+```
+
+### Alternate Annotations
+
+``` r
+plt +
+   geom_hline(yintercept = 32, 
+             lty = 2, color = 'gray25') +
+  geom_hline(yintercept = 14, 
+             lty = 2, color = 'gray25') +
+  annotate('text', x = 3, y = 40, label = 'DMR P90 threshold, 31 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[6]) +
+  annotate('text', x = 3, y = 17.5, label = 'DMR Geometric Mean threshold, 14 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[4])
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/bootstrap_graphic_2-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_one_revised_alt.pdf', device = cairo_pdf, 
+       width = 4, height = 3)
+```
+
+## Shapes with outlines Plot
+
+These plots look fairly poor here in the Markdown document, but the PDFs
+work O.K. The goal was to make the markers standout a bit more
+
+``` r
+plt <- ggplot(long_dat, aes(Station, value)) + 
+
+  geom_linerange(aes(ymin = lower, ymax = upper, color = parameter),
+                 alpha = 0.25,
+                 size = .1) +
+  geom_point(aes(fill = parameter), color = 'gray60', 
+             stroke = 0.25,  size = 1, shape = 21) + 
+  scale_y_log10(labels = scales::comma) +
+  scale_color_manual(name = '', values = cbep_colors()[c(6,4)]) +
+  scale_fill_manual(name = '', values = cbep_colors()[c(6,4)]) +
+  ylab('Fecal Coliforms (CFU / 100ml)')+
+  xlab('Sampling Sites Around Casco Bay') +
+  expand_limits(x = 240) +  # this ensures the top dot is not cut off
+  
+  theme_cbep(base_size = 7) + 
+  theme(legend.position = c(.2, 0.8),
+        legend.text = element_text(size = 7),
+        legend.key.height = unit(1, 'lines'),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 7),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.y = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) +
+  guides(color = guide_legend(override.aes = list(lty = 0, size = 2)))
+```
+
+``` r
+plt +
+  geom_hline(yintercept = 32, 
+             lty = 2, color = 'gray25') +
+  geom_hline(yintercept = 14, 
+             lty = 2, color = 'gray25') +
+  annotate('text', x = 3, y = 40, label = '31 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[6]) +
+  annotate('text', x = 3, y = 18, label = '14 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[4])
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/bootstrap__graphic_3-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_one_revised_outlines.pdf', device = cairo_pdf, 
+       width = 4, height = 3)
+```
+
+### Alternate Annotations
+
+``` r
+plt +
+   geom_hline(yintercept = 32, 
+             lty = 2, color = 'gray25') +
+  geom_hline(yintercept = 14, 
+             lty = 2, color = 'gray25') +
+  annotate('text', x = 3, y = 40, label = 'DMR P90 threshold, 31 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[6]) +
+  annotate('text', x = 3, y = 17.5, label = 'DMR Geometric Mean threshold, 14 CFU',
+           hjust = 0,
+           size = 1.75, 
+           color = cbep_colors()[4])
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/bootstrap_graphic_4-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_one_revised_alt_outlines.pdf', device = cairo_pdf, 
+       width = 4, height = 3)
+```
+
+### Annotation Dataframe
+
+We create a data frame that uses the same factor names, so we can direct
+different annotations to each panel
+
+``` r
+annot_df <- tibble(parameter = factor(c(1,2), 
+                                      labels = c('Geometric Mean',
+                                                 '90th Percentile')),
+                   threshold = c(14, 31),
+                   txt = c('14 CFU', '31 CFU'),
+                   adjust = c(3, 7.5),
+                   adjust_no_bars = c(2, 4.5),
+                   adjust_two = c(5, 12),
+                   adjust_two_no_bars = c(3.5, 8))
+```
+
+# Combined Graphics: Vertical Layout
+
+## One Panel
+
+``` r
+ggplot(long_dat, aes(value, Station)) + 
+  geom_linerange(aes(xmin = lower, xmax = upper, color = parameter),
+                 alpha = 0.5,
+                 size = .1) +
+  geom_point(aes(color = parameter), size = 0.75) + 
+  scale_x_log10() +
+  scale_color_manual(name = '', values = cbep_colors()[c(4,6)]) +
+  scale_fill_manual(name = '', values = cbep_colors()[c(4,6)]) +
+  xlab('Fecal Coliforms\n(CFU / 100ml)')+
+  ylab('Location') +
+  expand_limits(y = 240) +  # this ensures the top dot is not cut off
+  geom_vline(data = annot_df,
+             mapping = aes(xintercept = threshold), 
+             lty = 2, color = 'gray25') +
+  geom_text(data = annot_df, y = 30, 
+             mapping = aes(x = threshold + adjust, 
+                           label = txt),
+             size = 3, hjust = 0, angle = 270) +
+  theme_cbep(base_size = 12) + 
+  theme(legend.position = c(.7, .25),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) +
+  guides(color = guide_legend(override.aes = list(lty = 0, size = 2)))
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/station_bootstrap_one_graphics-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_one.pdf', device = cairo_pdf, 
+       width = 4, height = 5)
+```
+
+## Two Panels
+
+``` r
+ggplot(long_dat, aes(value, Station)) + 
+  geom_linerange(aes(xmin = lower, xmax = upper, color = parameter),
+                 alpha = 0.5,
+                 size = .1) +
+  geom_point(aes(color = parameter), size = 0.75) + 
+  scale_x_log10() +
+  facet_wrap('parameter', nrow = 1) +
+  scale_color_manual(values = cbep_colors()[c(4,6)]) +
+  scale_fill_manual(values = cbep_colors()[c(4,6)]) +
+  xlab('Fecal Coliforms\n(CFU / 100ml)') +
+  ylab('Location') +
+  geom_vline(data = annot_df,
+             mapping = aes(xintercept = threshold), 
+             lty = 2, color = 'gray25') +
+  geom_text(data = annot_df, y = 30, 
+             mapping = aes(x = threshold + adjust_two, label = txt),
+             size = 3, hjust = 0, angle = 270) +
+  theme_cbep(base_size = 12) + 
+  theme(legend.position = 'None',
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line  = element_line(size = 0.5, 
+                                  color = 'gray85'),
+        panel.grid.major.x = element_line(size = 0.5, 
+                                          color = 'gray85', 
+                                          linetype = 2)) 
+```
+
+<img src="shellfish_bacteria_graphics_files/figure-gfm/station_bootstrap_combined_graphics-1.png" style="display: block; margin: auto;" />
+
+``` r
+ggsave('figures/stations_both_two.pdf', device = cairo_pdf, 
+       width = 5, height = 5)
 ```
