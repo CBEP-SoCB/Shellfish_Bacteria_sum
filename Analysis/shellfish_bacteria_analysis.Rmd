@@ -19,11 +19,11 @@ knitr::opts_chunk$set(fig.align = 'center',
 ```
 
 # Introduction
-Exploratory analysis highlights the extreme skewness of the distribution of
-bacteria data, both here with the shellfish -related data collected by DMR, and 
+Exploratory analysis highlighted the extreme skewness of the distribution of
+bacteria data, both here with the shellfish related data collected by DMR, and 
 with the data related to recreational beaches, collected by towns, and managed
-by DEP. Skewness means these data are difficult to analyze with any authority, and so
-a degree of humility is called for in interpreting any  analyses.
+by DEP. Skewness means these data are difficult to analyze with any authority, 
+and so a degree of humility is called for in interpreting any  analyses.
 
 Our primary goal is to be able to assess if there are important predictors of
 elevated bacteria levels that we can discern, and especially to identify if
@@ -31,9 +31,9 @@ some sites are unusually vulnerable to elevated bacteria levels. Here we follow
 a strategy used in looking at the Beaches data, of looking at several imperfect
 modeling strategies to examine patterns.
 
-Another notebook will directly address modeling of exceedances of relevant
-standards.  Here we focus on site to site variation, and relationships to 
-a few covariates.
+The accompanying  notebook, 'frequency_analysis/Rmd'  address modeling of
+exceedances of relevant standards.  Here we focus on site to site variation, and
+relationships to a few covariates.
 
 # Relevant Standards
 ## Growing Area Classification Standards
@@ -52,7 +52,8 @@ $< 31$ and $<= 163$
 
 ## Maine State Class SB Waters Standards
 Maine's water quality criteria includes an additional standard, which applies
-only indirectly to these data:  
+only indirectly to these data: 
+
 > the number of enterococcus bacteria in these waters may not exceed a geometric
   mean of 8 CFU per 100   milliliters in any 90-day interval or 54 CFU per 100
   milliliters in more than 10% of the samples in any 90-day interval.
@@ -87,7 +88,7 @@ library(LCensMeans)
 # Load Data
 ## Main Data
 ```{r load_main}
-sibfldnm <- 'Derived_Data'
+sibfldnm <- 'Data'
 parent <- dirname(getwd())
 sibling <- file.path(parent,sibfldnm)
 fl1<- "Shellfish data 2015 2018.csv"
@@ -109,11 +110,11 @@ coli_data <- read_csv(path,
 
 ### Address Censored Data
 Right censored values are sufficiently rare as to be relatively unimportant
-we leave the undressed, but address left censored values.  Interval Censored 
+we leave them undressed, but address left censored values.  Interval Censored 
 values add complexity, but are unlikely in our setting to sharply alter 
 qualitative conclusions, so we chose not to address them.
 
-We first calculate a estimated conditional mean to replace the (left) censored
+We first calculate an estimated conditional mean to replace the (left) censored
 values. The algorithm is not entirely appropriate, as it assumes lognormal
 distribution, and our data are closer to Pareto-distributed.  Still, it handles
 the non-detects on a more rational basis than the usual conventions.
@@ -163,10 +164,10 @@ coli_data <- coli_data %>%
   filter (! is.na(ColiVal))
 ```
 
+
 ## Weather Data
-We simplify the weather data somewhat.
 ```{r load_weather_data}
-sibfldnm    <- 'Original_Data'
+sibfldnm    <- 'Data'
 parent      <- dirname(getwd())
 sibling     <- file.path(parent,sibfldnm)
 
@@ -174,23 +175,15 @@ fn <- "Portland_Jetport_2015-2019.csv"
 fpath <- file.path(sibling, fn)
 
 weather_data <- read_csv(fpath, 
- col_types = cols(AWNDattr = col_skip(), 
-        FMTM = col_skip(), FMTMattr = col_skip(), 
-        PGTM = col_skip(), PGTMattr = col_skip(),
-        PRCPattr = col_character(), SNOWattr = col_character(), 
-        SNWD = col_skip(), SNWDattr = col_skip(),
-        TAVG = col_number(), TAVGattr = col_character(), 
-        TMIN = col_number(), TMINattr = col_character(), 
-        TMAX = col_number(), TMAXattr = col_character(), 
-        station = col_skip())) %>%
-  select(! starts_with('W')) %>%
-  select(! ends_with('attr')) %>%
+ col_types = cols(station = col_skip())) %>%
+  select( ! starts_with('W')) %>%
   rename(sdate = date,
          Precip=PRCP,
          MaxT = TMAX,
          MinT= TMIN,
          AvgT = TAVG,
-         Snow = SNOW) %>%
+         Snow = SNOW,
+         SnowD = SNWD) %>%
   mutate(sdate = as.Date(sdate, format = '%m/%d/%Y'))
 ```
 
@@ -204,11 +197,12 @@ weather_data <- weather_data %>%
          Precip = Precip / 10,
          Precip_d1 = dplyr::lag(Precip,1),
          Precip_d2 = dplyr::lag(Precip,2),
-         Log1Precip    = log1p(Precip), 
-         Log1Precip_d1 = log1p(Precip_d1),
-         Log1Precip_d2 = log1p(Precip_d2),
-         Log1Precip_2   = log1p(Precip_d1 + Precip_d2),
-         Log1Precip_3   = log1p(Precip + Precip_d1 + Precip_d2))
+         log1precip    = log1p(Precip), 
+         log1precip_d1 = log1p(Precip_d1),
+         log1precip_d2 = log1p(Precip_d2),
+         log1precip_2   = log1p(Precip_d1 + Precip_d2),
+         log1precip_3   = log1p(Precip + Precip_d1 + Precip_d2)) %>%
+  rename_with(tolower)
 ```
 
 ## Incorporate Weather Data
@@ -249,7 +243,7 @@ ggplot(coli_data, aes(ColiVal_ml)) +
   theme_cbep(base_size = 10)
 ```
 
-As for the Beaches data:  
+As we saw for the Beaches data:  
 1.  Non detects are highly abundant.  
 2.  Violations of standards are relatively rare.   
 
@@ -284,28 +278,6 @@ names(parms) <- c('Scale', 'Shape')
 parms
 #predict(paretofit, newdata = data.frame(x = 1))
 ```
-
-```{r plot_pareto_fit}
-ggplot(coli_data,aes(x = ColiVal_ml)) +
-  geom_histogram(aes( y = ..density..)) +
-  geom_vline(xintercept = 14, lty = 3, col = 'blue') +
-  geom_vline(xintercept = 31, lty = 2, col = 'blue') +
-  geom_vline(xintercept = 88, lty = 3) +
-  geom_vline(xintercept = 163, lty = 2) +
-  scale_x_log10() +
-  scale_y_log10() +
-
-  theme_cbep(base_size = 10) +
-  
-  geom_function(fun = dparetoII,
-                 args = list(location = 0,
-                             scale = parms[[1]],
-                             shape = parms[[2]]),
-                 color = 'red')
-```
-
-So we have a scaling problem, but the overall pattern does not look wildly
-inappropriate....
 
 ## Simple Time Plot
 ### Create Geometric Mean Function
@@ -350,7 +322,8 @@ exp(mean(log(coli_data$ColiVal_ml)))
 
 Note that the medians are right at the detection limits (or our re-casting of
 those to handle non-detects).  Also, the 75th percentile is at 4.0, just double 
-the detection limit.
+the detection limit. Almost  al ldensity is below detection or at very low 
+bacteria levels.
 
 ## Summary Statistics Dataframe
 ```{r summary_data_frame}
@@ -385,7 +358,7 @@ sum_data <- coli_data %>%
 ```
 
 ### Graphic
-```{r plot_summaries, fig.height = 7}
+```{r plot_summaries}
 plt <- ggplot(sum_data, aes(gmean2, Station)) + 
   geom_pointrange(aes(xmin = L_CI2, xmax = U_CI2),
                   color = cbep_colors()[4],
@@ -432,7 +405,7 @@ plot(test_lm)
 
 The model fails to address extreme values.  You see clear relationships between 
 location and scale.  Some of the pattern reflects the discrete nature of the 
-lower observations.  A better model might need t explicitly model interval
+lower observations.  A better model might need to explicitly model interval
 censored data.
 
 ```{r}
@@ -456,7 +429,7 @@ emms <- summary(emmeans(test_lm, "Station", type = 'response')) %>%
 ```
 
 ### Graphic
-```{r plot_lm_emms, fig.height = 7}
+```{r plot_lm_emms}
 plt <- ggplot(emms, aes(geom_mean, Station)) + 
   geom_pointrange(aes(xmin = lower.CL, xmax = upper.CL),
                   color = cbep_colors()[4],
@@ -477,9 +450,14 @@ plt <- ggplot(emms, aes(geom_mean, Station)) +
                                           linetype = 2)) 
 plt
 ```
+This model provides pooled estimates of standard errors and confidence
+intervals, which is probably inappropriate for such highly skewed data. since
+this is on a log X axis, that makes al lteh errors look about the same width,
+even though they are not.
 
-So only one site has estimated long-term geometric mean that exceeds the
-geometric mean standard between
+### Observed Geometric Means
+This graphic rests on the fact that `stat_summary()` applies its summary 
+statistics after values are transformed for the log x axis.
 
 ```{r plot_lm_emms_plus}
 plt +
@@ -488,26 +466,26 @@ plt +
                fill = 'red', shape = 23)
 ```
 
-So our model regenerates the observed geometric means, as expected.
+So our model basically regenerates the observed geometric means, as expected.
 
 ## Linear Rainfall Model
 Most likely, a rainfall predictor would be useful.  We assemble rainfall data
-based on NOAA weather data.  Rainfall data is **also** highly skewed, so we 
-focus on the and look at the log of rainfall.  Our predictors are log of the
-prior day's rainfall, the log of the current day's rainfall, and the log of from the prior two 
-days.
+based on NOAA weather data.  Rainfall data is **also** highly skewed, so we
+focus on the log plus 1 of rainfall.  Our predictors are log of the prior day's
+rainfall, the log of the current day's rainfall, and the log of from the prior
+two days.
 
 We have multiple possible predictors. If we take them one at a time, which is 
 best?
 
 ```{r rain_lm_compare}
-rain_lm_1 <- lm(log(ColiVal_ml) ~ Station + Log1Precip,  data = coli_data)
-rain_lm_2 <- lm(log(ColiVal_ml) ~ Station + Log1Precip_d1,  data = coli_data)
-rain_lm_3 <- lm(log(ColiVal_ml) ~ Station + Log1Precip_d2,  data = coli_data)
-rain_lm_4 <- lm(log(ColiVal_ml) ~ Station + Log1Precip + Log1Precip_d1,
+rain_lm_1 <- lm(log(ColiVal_ml) ~ Station + log1precip,  data = coli_data)
+rain_lm_2 <- lm(log(ColiVal_ml) ~ Station + log1precip_d1,  data = coli_data)
+rain_lm_3 <- lm(log(ColiVal_ml) ~ Station + log1precip_d2,  data = coli_data)
+rain_lm_4 <- lm(log(ColiVal_ml) ~ Station + log1precip + log1precip_d1,
                 data = coli_data)
-rain_lm_5 <- lm(log(ColiVal_ml) ~ Station + Log1Precip + 
-                  Log1Precip_d1 + Log1Precip_d2,
+rain_lm_5 <- lm(log(ColiVal_ml) ~ Station + log1precip + 
+                  log1precip_d1 + log1precip_d2,
                 data = coli_data)
 ```
 
@@ -519,26 +497,25 @@ rm(rain_lm_1, rain_lm_2, rain_lm_3, rain_lm_4, rain_lm_5)
 
 Rainfall is highly significant.  The best single predictor is based on the 
 previous day's rainfall (Model 2) adding the current day's rainfall helps a bit
-more.  Including the current day's rainfall also helps.
-but the reduction in sums of squares.
+more.
 
 ```{r rain_lm}
-rain_lm <- lm(log(ColiVal_ml) ~ Station + Log1Precip + 
-                Log1Precip_d1, data = coli_data)
+rain_lm <- lm(log(ColiVal_ml) ~ Station + log1precip + 
+                log1precip_d1, data = coli_data)
 ```
 
 ```{r pull_rain_coefs}
 summary(rain_lm)$coefficients[239:240,]
 ```
 
-So conditions are more dependent on the prior day's rainfall.  
+So conditions are more dependent on the prior day's rainfall, which makes sense,
+since rainfall on the day of sampling could fall after sampling occurs.
 
 #### Extract Adjusted Station by Station Estimates
 Note that we specify marginal means calculated for a day without rainfall,
 rather than for a day with "average" rainfall, which would be higher, or a day
 with median rainfall. We could have used `cov.reduce = median`, since median
-rainfall **was** zero, but that could lead to inconsistent models with other
-data.
+rainfall **was** zero, but that could lead to confusion.
 
 ```{r emms_rain_lm}
 emms <- summary(emmeans(rain_lm, "Station", type = 'response',
@@ -550,7 +527,7 @@ emms <- summary(emmeans(rain_lm, "Station", type = 'response',
 ```
 
 ### Graphic
-```{r plot_rain_lm_emms, fig.height = 7}
+```{r plot_rain_lm_emms}
 plt <- ggplot(emms, aes(geom_mean, Station)) + 
   geom_pointrange(aes(xmin = lower.CL, xmax = upper.CL),
                   color = cbep_colors()[4],
@@ -635,7 +612,7 @@ We therefore largely fall back on alternative (1), which we usually avoid.
 Again, qualitative results do not change much, but model stability improves.
 
 ## Simple Gamma GLM
-Note that we are NOT using  non-detect corrected data here, because it includes
+Note that we are NOT using non-detect corrected data here, because it includes
 values below 1, which leads to log of values below 0, which the gamma models
 can not handle.
 
@@ -651,7 +628,7 @@ boot::glm.diag.plots(gamma_glm)
 
 That addresses the extreme values more successfully than our linear models, but
 not entirely. The scale-location relationship remains, but has been reduced in
-importance and partially reversed.
+importance.
 
 ```{r emms_gamma_glm}
 emms <- summary(emmeans(gamma_glm, "Station", type = 'response')) %>%
@@ -662,7 +639,7 @@ emms <- summary(emmeans(gamma_glm, "Station", type = 'response')) %>%
 ```
 
 #### Graphic
-```{r plot_glm_emms, fig.height = 7}
+```{r plot_glm_emms}
 plt <- ggplot(emms, aes(geom_mean, Station)) + 
   geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL),
                   color = cbep_colors()[4],
@@ -688,7 +665,7 @@ Qualitatively, that is similar to results from the linear model, with confidence
 intervals that scale with the geometric means, which makes sense both with
 these data and with a gamma model.
 
-```{r plot_glm_emms_plus, fig.height = 7}
+```{r plot_glm_emms_plus}
 plt +
    stat_summary(fun = mean, mapping = aes(x=ColiVal, y=Station), 
                 data = coli_data,
@@ -701,29 +678,13 @@ our non-detect corrected data, or fitting the version with non-detects scaled
 to half the nominal reporting limit, since we are replacing the non-detects
 with their reporting limits here.
 
-## Inverse Gaussian GLM
-```{r inverse_gaussian_glm}
-ig_glm <- glm(log(ColiVal) ~ Station, 
-                family = inverse.gaussian(), 
-                data = coli_data)
-```
-
-```{r diagnostics_ig_glm}
-boot::glm.diag.plots(ig_glm)
-```
-
-The inverse Gaussian GLMs do slightly better addressing the location-scale
-relationship.  But residuals are larger, more heavily skewed, and contain a
-"kink" that apparently depends on how we handle the non-detects. We prefer the 
-gamma models, and continue examining only those models.
-
 ## Rainfall Gaussian GLM
 We focus on a model that includes information on rainfall from the prior day and 
 the day of sampling (guided by our linear model analysis).
 
 ```{r rain_glm}
-rain_glm <- glm(log(ColiVal) ~ Station + Log1Precip + 
-                Log1Precip_d1, 
+rain_glm <- glm(log(ColiVal) ~ Station + log1precip + 
+                log1precip_d1, 
                 family = Gamma(), 
                 data = coli_data)
 ```
@@ -761,10 +722,10 @@ emms2 <- summary(emmeans(rain_glm, "Station", type = 'response',
 ```
 
 ### Graphic
-We add colors by DMR Grow Region.  This makes the graphic more confusing. It
+We add colors by DMR Grow Region.  This makes the graphic more confusing. But it
 shows clear differences among regions, so it was worth trying.
 
-```{r plot_rain_gam_emms, fig.height = 7}
+```{r plot_rain_gam_emms}
 plt <- ggplot(emms2, aes(geom_mean, Station)) + 
   geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL, color = GROW_AREA),
                   #color = cbep_colors()[4],
@@ -789,7 +750,7 @@ plt
 
 Qualitatively, that is similar to results from the prior model.
 
-```{r plot_rain_gam_emms_plus, fig.height = 7}
+```{r plot_rain_gam_emms_plus}
 plt +
    stat_summary(fun = mean, mapping = aes(x=ColiVal, y=Station), 
                 data = coli_data,
@@ -799,18 +760,24 @@ plt +
 In this case, our estimated marginal means shifted below the observed 
 geometric means.  This is expected, as we have chosen to estimate marginal
 means for a day with no recent rainfall.  The effect is fairly large for a few 
-high geometric mean sites.  It's not clear if that is a modeling artifact 
-or reflects the possibility that sites with higher geometric means were (by 
-chance?) sampled more after rain.
+high geometric mean sites. Since we are fitting overall rainfall parameters 
+(not station by station parameters), the larger effect at higher geometric
+mean sites simply reflects the structure of the Gamma GLM.  It probably 
+represents something that is really going on, but it also is a model artifact.
 
 ## Growing Regions GAM
-We clearly have a hierarchical model here, with Stations nested within Growing
+We clearly need a hierarchical model here, with Stations nested within Growing
 Areas.  It is appropriate to treat the Stations (in this setting) as random
 factors within Growing Areas. So we fit this as a GAM model, using a random 
 effects smoother.A functionally similar model could be fit with `lme()` or
-`lmer()`
+`lmer()`.
+
+This model takes perhaps 1 minute to run. it is not at all clear why we need to
+qualify the `Station` variable directly, but it is not being found correctly
+within the data frame, despite being present.
+
 ```{r grow_gam, cache = TRUE}
-grow_gam <- gam(log(ColiVal) ~ GROW_AREA + s(Station, bs = 're'), 
+grow_gam <- gam(log(ColiVal) ~ GROW_AREA + s(coli_data$Station, bs = 're'), 
                 family = Gamma(), 
                 data = coli_data)
 ```
@@ -827,7 +794,7 @@ levels of fecal coliforms at the different stations.
 plot(grow_gam)
 ```
 
-This plot shows the magnitude of the random effects.  IDeally, these residuals
+This plot shows the magnitude of the random effects.  Ideally, these residuals
 should be close to normally distributed.  here we note that they are somewhat
 skewed, but not excessively so.
 
@@ -838,7 +805,7 @@ summary(grow_gam)
 Because the link function is the inverse, a lower value here implies a 
 higher geometric mean. The default base case here is `GROW_AREA == "HI"`.
 That is the highest bacteria region, with the other regions showing generally
-lower concentrations.  Pairwise coefficients are not individually 
+lower concentrations.  Pairwise coefficients are individually 
 significant (or in one case marginally so).
 
 ```{r emms_grow_gam_prelim}
@@ -850,11 +817,7 @@ rm(myemms)
 ```
 
 So, in pairwise comparisons, "WI" has lower linear predictor (higher response) 
-than all the other sites.  In addition.," "WK" is significantly worse off than
-"WJ" and nearly significantly worse of f than "WL".
-
-(Results are less clear cut if we analyze ColiVal_hf, where we replace 
-non-detects by half their value, but  then the model is unstable.)
+than two of the other sites.
 
 ```{r emms_grow_gam}
 emms3 <- summary(emmeans(grow_gam, "GROW_AREA", type = 'response',
@@ -905,21 +868,12 @@ month_gam <- gam(log(ColiVal) ~ Month + s(Station, bs = 're'),
                 data = coli_data)
 ```
 
-This model failed to converge cleanly when fit against `ColiVal_hf`.  
-We do not see those problems when fitting the uncorrected data, as here.  That
-suggests that our model (a gamma fit, with inverse link on log transformed
-data) has trouble with fitting the values of the non-detects when we replace 
-non-detects with a value of 1.
-
-Those warnings suggest problems with convergence.  That is not all that
-surprising, since both rainfall and fecal coliform levels are highly skewed -- and
-the correlations between them, while important, are not perfect.
-
 ```{r diagnostics_month_gam}
 plot(month_gam)
 ```
 
-The random effects are again skewed.
+The random effects are again skewed, leaving some question about the adequacy of 
+the model.
 
 ```{r}
 summary(month_gam)
@@ -939,7 +893,8 @@ rm(myemms)
 
 The overall pattern is that June through November tend to not differ (although
 each of those two months are sometimes different from one or another month).
-December through May also tend to not differ, 
+December through May also tend to not differ.  But the winter month coefficients
+tend to be higher (= lower coliform levels) than the summer months.
 
 ### Results
 ```{r, emms_month_gam}
@@ -986,15 +941,15 @@ expected, since the model estimates are corrected for sampling histories of
 different Stations.
 
 ## Full Seasonal (DOY) model
-We fit a cyclic smoother to the Day of the Year.  Selection
-of the degree of smoothing is a bit of an arbitrary call, but we
-generally prefer to underfit rather than overfit GAM smoothers.  The default 
-fit used almost eight degrees of freedom, and it fit what looked like a few too 
-many wiggles for a reasonable seasonal pattern.  We try six knots, for a 
-slightly smoother fit.
+We fit a cyclic smoother to the Day of the Year.  Selection of the degree of
+smoothing is a bit of an arbitrary call, but we generally prefer to underfit
+rather than overfit GAM smoothers.  The default fit used almost eight degrees of
+freedom, and it fit what looked like a few too many wiggles for a reasonable
+seasonal pattern.  We try six knots, for a slightly smoother fit.
 
 ```{r DOY_gam}
-doy_gam <- gam(log(ColiVal) ~ s(DOY, k = 6, bs = 'cc') + s(Station, bs = 're'), 
+doy_gam <- gam(log(ColiVal) ~ s(DOY, k = 6, bs = 'cc') + 
+                 s(Station, bs = 're'), 
                 family = Gamma(), 
                 data = coli_data)
 ```
@@ -1044,18 +999,6 @@ ggplot(coli_data, aes(DOY, ColiVal)) +
   scale_y_log10()
 ```
 
-## Pareto Models
-We were unable to run a Pareto model successfully under `VGAM`.
-```{r pareto_glm, error = TRUE}
-tmp <- coli_data %>%
-  filter (! is.na(ColiVal))
-pareto_vglm <- vglm(ColiVal ~ Station, 
-                    paretoII, data = tmp,
-                    maxit = 50)
-anova.vglm(pareto_vglm)
-rm(tmp)
-```
-
 ## Nonparametric Tests
 We proceed to a nonparametric analysis. This is useful for a one way analysis, 
 but does not lend itself to testing more complex models.
@@ -1069,9 +1012,9 @@ close, so we look at medians again.
 
 ```{r summary_again}
 sum_data %>%
-  mutate(Station = fct_reorder(Station, median2)) %>%
+  mutate(Station = fct_reorder(Station, median1)) %>%
   
-  ggplot(aes(median2, Station)) +
+  ggplot(aes(median1, Station)) +
   geom_point() +
 
   scale_x_log10() + 
@@ -1089,28 +1032,6 @@ sum_data %>%
 Note how many of those medians are at (or very close to) discrete values
 determined by the methods involved.  **Most** sites **almost always** are below
 detection limits or at very low levels.
-
-### Pairwise Wilcoxon test
-Although a pairwise analysis is possible, it is not very informative with so 
-many stations.
-
-The following is moderately slow.... Many warnings are produced, all saying 
-exact p values are not possible with tied values -- of which we have many.
-
-The giant cross classification matrix is hard to parse, so this is not 
-especially useful without a lot more work.  We don't need it, as results will
-generally confirm that some Stations are different from others, which we know. 
-
-```{r wilcox, warnings = FALSE}
-res <- suppressWarnings(
-    pairwise.wilcox.test(coli_data$ColiVal_ml,
-                         coli_data$Station,
-                         p.adjust.method = "holm"))
-```
-
-Differences among sites are statistically meaningful, but pairwise comparisons
-are too numerous to be especially informative.  Some sites differ from others, 
-but other than that, it's hard to summarize.
 
 # Output Table for GIS
 ```{r}

@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en"><Esri><CreaDate>20210212</CreaDate><CreaTime>13435500</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><DataProperties><lineage><Process ToolSource="c:\program files (x86)\arcgis\desktop10.8\ArcToolbox\Toolboxes\Data Management Tools.tbx\CalculateField" Date="20210212" Time="134355">CalculateField Casco_Bay_Shellfish_p90_Locations Grow_Area Left( [Station],2  ) VB #</Process></lineage></DataProperties></Esri></metadata>

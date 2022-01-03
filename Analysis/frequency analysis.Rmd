@@ -23,15 +23,11 @@ The bacteria data is highly skewed. We have found no ready way to model a
 geometric mean for these data in a robust way.  The data appears distributed
 close to a Pareto distribution, which is highly skewed, with a heavy right tail.
 This distribution is likely to be difficult to model, so we can not readily
-estimate parameters, moments and other summary statistics.
+develop estimates of parameters, moments and other summary statistics based on
+complex models.
 
-One possibility would be to run some sort of (generalized) linear model on the
-log of data, calculate means and medians, and back transform. We explore
- linear model approaches in another R Notebook.
-
-Here we take another approach, which is to focus on binomial, quasi-binomial,
-and multinomial proportional odds models to estimate probabilities of exceeding
-different regulatory thresholds.
+Here we focus on binomial, quasi-binomial, and multinomial proportional odds
+models to estimate probabilities of exceeding different regulatory thresholds.
 
 ## Growing Area Classification Standards
 
@@ -45,11 +41,11 @@ Prohibited	             | Aquaculture seed production only	    | >88	           
 
 So, critical levels for Geometric Mean include:
 
-*  $GM \leq 14$: Approved, or Open status at Conditionally Approved sites
+*  $\textrm{GM} \leq 14$: Approved, or Open status at Conditionally Approved sites
 
-*  $GM \leq 88$: Depuration harvesting or Relay Only
+*  $\textrm{GM} \leq 88$: Depuration harvesting or Relay Only
 
-*  $GM > 88$ : Prohibited
+*  $\textrm{GM} > 88$ : Prohibited
 
 And for the p90:
 
@@ -62,6 +58,7 @@ And for the p90:
 ### Maine State Class SB Waters Standards
 Maine's water quality criteria includes an additional standard, which applies
 only indirectly to these data:  
+
 > the number of enterococcus bacteria in these waters may not exceed a geometric
   mean of 8 CFU per 100   milliliters in any 90-day interval or 54 CFU per 100
   milliliters in more than 10% of the samples in any 90-day interval.
@@ -76,16 +73,15 @@ limited value. More seriously, the standard is written in terms of
 # Load Libraries
 ```{r libraries}
 library(MASS)   # Load before tidyverse because it has a select() function
-library(mgcv)   # For GAMs and GAMMs; used her for seasonal smoothers
+library(mgcv)   # For GAMs and GAMMs; used here for seasonal smoothers
 library(tidyverse)
 
 library(readr)
 library(GGally)
 
 library(emmeans)   # For marginal means
-library(mblm)      # for the Thiel-Sen estimators -- not really successful here
+#library(mblm)      # for the Thiel-Sen estimators -- not really successful here
 library(VGAM)      # For Pareto GLMs and estimation.
-library(mgcv)      # For GAMs, here used principally for hierarchical models
 
 library(CBEPgraphics)
 load_cbep_fonts()
@@ -95,7 +91,7 @@ theme_set(theme_cbep())
 # Load Data
 ## Main Data
 ```{r load_main_data}
-sibfldnm <- 'Derived_Data'
+sibfldnm <- 'Data'
 parent <- dirname(getwd())
 sibling <- file.path(parent,sibfldnm)
 fl1<- "Shellfish data 2015 2018.csv"
@@ -105,7 +101,6 @@ coli_data <- read_csv(path,
   col_types = cols(SDate = col_date(format = "%Y-%m-%d"), 
         SDateTime = col_datetime(format = "%Y-%m-%dT%H:%M:%SZ"), # Note Format!
         STime = col_time(format = "%H:%M:%S"))) %>%
-  mutate(across(Station:WDIR, factor)) %>%
   mutate(Class = factor(Class, levels = c( 'A', 'CA', 'CR',
                                            'R', 'P', 'X' ))) %>%
   mutate(Tide = factor(Tide, levels = c("L", "LF", "F", "HF",
@@ -123,10 +118,8 @@ coli_data <- coli_data %>%
 ```
 
 ## Weather Data
-We simplify the weather data somewhat.
-
 ```{r load_weather_data}
-sibfldnm    <- 'Original_Data'
+sibfldnm    <- 'Data'
 parent      <- dirname(getwd())
 sibling     <- file.path(parent,sibfldnm)
 
@@ -134,23 +127,15 @@ fn <- "Portland_Jetport_2015-2019.csv"
 fpath <- file.path(sibling, fn)
 
 weather_data <- read_csv(fpath, 
- col_types = cols(AWNDattr = col_skip(), 
-        FMTM = col_skip(), FMTMattr = col_skip(), 
-        PGTM = col_skip(), PGTMattr = col_skip(),
-        PRCPattr = col_character(), SNOWattr = col_character(), 
-        SNWD = col_skip(), SNWDattr = col_skip(),
-        TAVG = col_number(), TAVGattr = col_character(), 
-        TMIN = col_number(), TMINattr = col_character(), 
-        TMAX = col_number(), TMAXattr = col_character(), 
-        station = col_skip())) %>%
+ col_types = cols(station = col_skip())) %>%
   select( ! starts_with('W')) %>%
-  select(! ends_with('attr')) %>%
   rename(sdate = date,
          Precip=PRCP,
          MaxT = TMAX,
          MinT= TMIN,
          AvgT = TAVG,
-         Snow = SNOW) %>%
+         Snow = SNOW,
+         SnowD = SNWD) %>%
   mutate(sdate = as.Date(sdate, format = '%m/%d/%Y'))
 ```
 
@@ -186,12 +171,12 @@ careful, we  remove sampling data for any site in the two adjacent Growing Areas
 ```{r remove_outside_region}
 coli_data <- coli_data %>%
   filter(grow_area != 'WH' & grow_area != "WM") %>%
-  mutate(grow_area = fct_drop(grow_area))
+  mutate(grow_area = fct_drop(grow_area)) %>%
+  mutate(station = factor(station))
 ```
 
-
 ## Calculate Indicator Variables
-Here we calculate variables that indicate whether each sample exceeds our four
+we calculate variables that indicate whether each sample exceeds our four
 thresholds.  Then they are combined to produce three multinomial ordered
 factors.
 
@@ -274,15 +259,8 @@ Which looks pretty good.  Recall that the reason the points are all above
 the 1:1 line is that it is impossible to exceed the higher standard without
 also exceeding the lower threshold.  Note the relatively high correlations.
 
-That one extreme value probably corresponds to the one very high geometric mean 
-site we already observed.
-
 ## Add Imperviousness Data
 ```{r load_imperv_data}
-sibfldnm    <- 'Derived_Data'
-parent      <- dirname(getwd())
-sibling     <- file.path(parent,sibfldnm)
-
 fn <- "station_imperviousness.csv"
 fpath <- file.path(sibling, fn)
 
@@ -363,9 +341,6 @@ We can explore three different modeling strategies:
 2. A multinomial proportional odds model using the `polr()` function from `MASS`
 or `vglm()` from `VGAM`.
 
-Ideally, we should account for different sampling histories to provide robust
-comparable estimates of site probabilities.
-
 ## Binomial Models
 We focus on the probability of meeting the lower p90 threshold (`p90_open`).
 That threshold has potential consequences. If the probability of
@@ -373,12 +348,11 @@ violating that standard is high enough (> 90%) the site would have to be
 approved only for relay. Stations failed the higher `p90_relay` standard so 
 rarely that we run into problems with modeling.
 
-It is less clear how we would relate the probability of violating the Geometric
-Mean standards to our models.  
-
 ### Station Only
 We start with a simple model looking only at stations. The probability of 
 failing a standard may be an appropriate way to symbolize stations in GIS.
+
+This model takes about 10 seconds to run.
 
 ```{r station_glm}
 system.time(p90_open_glm_1 <- glm(p90_open  ~ station,
@@ -442,6 +416,7 @@ function, which can fit random factors using a smoothing term with basis
 designated as `bs = 're'`.  This helps protect against making claims on the 
 basis of the specific stations from which data are available.
 
+The following takes a bit over a minute to run.
 ```{r region_model, cache = TRUE}
 system.time(
   p90_open_gam_regions <- gam(p90_open  ~ grow_area + s(station, bs = 're'),
@@ -467,6 +442,9 @@ plot(p_res) +
   coord_flip()
 ```
 
+So the WI grow area shows a lower probability of meeting the threshold than do 
+the other regions.
+
 #### Draft Graphic
 ```{r plot_regions_emm}
 plt <- ggplot(p_res, aes(grow_area, prob)) + 
@@ -484,9 +462,13 @@ plt <- ggplot(p_res, aes(grow_area, prob)) +
   theme_cbep(base_size = 12)
 plt
 ```
+Each dot in that graphic represents a STATION, not an observation.
 
+### Month Model
+Next we look at whether the time of year (month) affects the probability of
+meeting the threshold.
 
-### Season Model
+This model takes a minute or so to run as well.
 ```{r season_model, cache = TRUE}
 system.time(p90_open_gam_months <- gam(p90_open ~ month + s(station, bs = 're'),
              data = freq_data,
@@ -497,8 +479,8 @@ system.time(p90_open_gam_months <- gam(p90_open ~ month + s(station, bs = 're'),
 anova(p90_open_gam_months)
 ```
 
-We see strong evidence that time of year matters, as expected from our analysis 
-of geometric means.
+We see strong evidence that time of year matters. This tesnds to confirm the
+results of our  analysisof geometric means.
 
 ```{r months_emms}
 mm <- emmeans(p90_open_gam_months, "month", type = 'response')
@@ -526,8 +508,10 @@ plt
 ```
 
 ### Rainfall Model
-Again, we artificially reduce the number of degrees of freedom associated with
+We reduce the number of degrees of freedom associated with
 each smoother to make them less wiggly.
+
+This model runs in a couple of minutes.
 ```{r rainfall_model, cache = TRUE}
 system.time(
   p90_open_gam_rain <- gam(p90_open ~ s(log1precip, k = 5) + 
@@ -564,7 +548,7 @@ imperviousness?  We examine value of percent imperviousness as a predictor of
 risk.
 
 #### Exploratory Graphic
-We display the horizontal axis using a square root transform, which is may
+We display the horizontal axis using a square root transform, which may
 stabilize the variation of a percentage.  
 
 ```{r imperv_expl_grap, fig.width  = 7}
@@ -598,6 +582,9 @@ factors.
 We run all three distances, using land-based percent cover estimates. First,
 with untransformed percent cover values.
 
+These models each take a minute or so to run, so this might be a good time
+to go get some coffee.
+
 ```{r imperv_models_1, cache = TRUE}
 system.time(imp_100 <- gam(p90_open ~ pct_l_100 + s(station, bs = 're'),
              data = freq_data,
@@ -621,37 +608,6 @@ anova(imp_1000)
 The only version that shows a statistically robust response is the 1000 meter 
 model.  The others are not significant.
 
-Now we run similar models on the square root of percent cover.
-
-```{r imperv_models_2, cache = TRUE}
-system.time(imp_100_t <- gam(p90_open ~ sqrt(pct_l_100) + s(station, bs = 're'),
-             data = freq_data,
-             family=binomial(link=logit)))
-system.time(imp_500_t <- gam(p90_open ~ sqrt(pct_l_500) + s(station, bs = 're'),
-             data = freq_data,
-             family=binomial(link=logit)))
-system.time(imp_1000_t <- gam(p90_open ~ sqrt(pct_l_1000) + s(station, bs = 're'),
-             data = freq_data,
-             family=binomial(link=logit)))
-```
-
-```{r}
-anova(imp_100_t)
-cat('\n\n')
-anova(imp_500_t)
-cat('\n\n')
-anova(imp_1000_t)
-```
-
-Again, only the 1000 meter version shows significant patterns with land use. The
-square root transform makes almost no difference regarding the adequacy of 
-the fit.
-
-```{r}
-anova(imp_1000, imp_1000_t)
-```
-
-We continue with the untransformed model, as easier to explain to our audience.
 
 ```{r}
 summary(imp_1000)
@@ -666,7 +622,6 @@ mm <- emmeans(imp_1000, "pct_l_1000",
               at = list(pct_l_1000 = seq(0, 20, 0.5)), type = 'response')
 mms <- summary(mm)  # Summary has class dataframe, making access and display easier.
 ```
-
 
 #### Graphic
 ```{r imperv_graphic}
@@ -684,15 +639,15 @@ rawprobs %>%
 So, the relationship is statistically significant, but not especially striking 
 or robust.  There is a lot of scatter, and the trend is driven mostly by (a) the
 frequency of sites that never see bad water quality, and (b) a handful of sites
-with high imperviousness.
+with high   The simplicity of the model does not really fit the data.  It is 
+possible that a more flexible modelling aproach, like a classification tree,
+might provide deeper insight.
 
 #### Cleanup
 ```{r}
-rm(imperv_data,
-   tmp, plt, mm, mms, p_res, 
+rm(tmp, plt, mm, mms, p_res, 
    p90_open_glm_1, p90_open_gam_months, p90_open_gam_regions,
-   p90_open_gam_rain, imp_100, imp_100_t, imp_500, imp_500_t, imp_1000, imp_1000_t,
-   lowerfun)
+   p90_open_gam_rain, imp_100, imp_500, imp_1000, lowerfun)
 ```
 
 ## Proportional Odds Models
@@ -858,8 +813,11 @@ pp <- predict(polr_region,
 pp
 ```
 
+Again, results are similar, as expected....
+
 ### Rainfall Models
-We continue by examining models of the impact of precipitation
+We continue by examining models of the impact of precipitation.
+
 #### Full model
 ```{r rainfall_pom}
 system.time(
@@ -891,7 +849,7 @@ AIC(pom_rain)
 AIC(pom_rain_2)
 ```
 
-So the full model is preferable.
+So the full model is preferable despite the Hauk-Donner effect warning.
 
 ```{r}
 summary(pom_rain)
