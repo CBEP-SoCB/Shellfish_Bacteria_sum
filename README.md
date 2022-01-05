@@ -1,3 +1,5 @@
+Insert logo
+
 # Shellfish_Bacteria
 Analysis of several years of data on bacteria levels in shellfish, from Maine's 
 Shellfish Sanitation Program.
@@ -130,14 +132,8 @@ to four sub-folders.  All archives contain at least an "Original_Data" and a
 "Graphics" folder.  The other two folders are only included if strictly
 necessary.
 
-- Original Data.  Original data, with a "DATA_SOURCES.md" or "READ ME.txt" 
-file that documents data sources.
-**DATA IN THIS FOLDER IS AS ORIGINALLY PROVIDED OR ACCESSED.** 
-
-- Derived Data.  Data derived from the original raw data.  Includes
-documentation of data reorganization steps, either in the form of files (R
-notebooks, Excel files, etc.) that embody data transformations, or via README.md
-or DATA_NOTES.md files.
+Data folder. Contains data in simplified or derived form as used in our data analysis. 
+Associated metadata is contained in related Markdown documents, usually DATA_SOURCES.md and DATA_NOTES.md.
 
 - Analysis.  Contains one or more R Notebooks proceeding through the data
 analysis steps. This often includes both preliminary data analysis --
