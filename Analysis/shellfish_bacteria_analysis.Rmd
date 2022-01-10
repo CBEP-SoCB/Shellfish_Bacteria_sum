@@ -322,7 +322,7 @@ exp(mean(log(coli_data$ColiVal_ml)))
 
 Note that the medians are right at the detection limits (or our re-casting of
 those to handle non-detects).  Also, the 75th percentile is at 4.0, just double 
-the detection limit. Almost  al ldensity is below detection or at very low 
+the detection limit. Almost  all density is below detection or at very low 
 bacteria levels.
 
 ## Summary Statistics Dataframe

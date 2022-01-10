@@ -230,7 +230,7 @@ coli_data %>%
   pull(ColiVal_ml) %>%
   summary
 #>    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
-#>  0.5517  0.5999  0.6112  0.6111  0.6223  0.6785
+#>  0.5454  0.5992  0.6109  0.6111  0.6225  0.6733
 ```
 
 So, our (lognormal) based estimator for censored values estimates a
@@ -372,7 +372,7 @@ parms <- exp(coef(paretofit))
 names(parms) <- c('Scale', 'Shape')
 parms
 #>     Scale     Shape 
-#> 1.3893994 0.9274665
+#> 1.3892481 0.9274351
 #predict(paretofit, newdata = data.frame(x = 1))
 ```
 
@@ -430,17 +430,17 @@ cat('\nNon-detects at maximum likelihood estimator\n')
 #> Non-detects at maximum likelihood estimator
 summary(coli_data$ColiVal_ml)
 #>      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
-#>    0.5517    0.6093    0.6336   16.3185    4.0000 1600.0000
+#>    0.5454    0.6090    0.6345   16.3184    4.0000 1600.0000
 cat('\n     Geometric Mean\n')
 #> 
 #>      Geometric Mean
 exp(mean(log(coli_data$ColiVal_ml)))
-#> [1] 1.886773
+#> [1] 1.886665
 ```
 
 Note that the medians are right at the detection limits (or our
 re-casting of those to handle non-detects). Also, the 75th percentile is
-at 4.0, just double the detection limit. Almost al ldensity is below
+at 4.0, just double the detection limit. Almost all density is below
 detection or at very low bacteria levels.
 
 ## Summary Statistics Dataframe
@@ -542,9 +542,9 @@ anova(test_lm)
 #> Analysis of Variance Table
 #> 
 #> Response: log(ColiVal_ml)
-#>             Df  Sum Sq Mean Sq F value    Pr(>F)    
-#> Station    237  2687.6 11.3402  5.2149 < 2.2e-16 ***
-#> Residuals 9161 19921.3  2.1746                      
+#>             Df Sum Sq Mean Sq F value    Pr(>F)    
+#> Station    237   2689 11.3461  5.2177 < 2.2e-16 ***
+#> Residuals 9161  19921  2.1745                      
 #> ---
 #> Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
 ```
@@ -646,10 +646,10 @@ anova(rain_lm_1, rain_lm_2, rain_lm_3, rain_lm_4, rain_lm_5)
 #> Model 5: log(ColiVal_ml) ~ Station + log1precip + log1precip_d1 + log1precip_d2
 #>   Res.Df   RSS Df Sum of Sq        F Pr(>F)    
 #> 1   9158 19265                                 
-#> 2   9158 18886  0    379.77                    
-#> 3   9158 19886  0  -1000.87                    
-#> 4   9157 18340  1   1546.55 772.3301 <2e-16 ***
-#> 5   9156 18334  1      5.36   2.6791 0.1017    
+#> 2   9158 18885  0    379.48                    
+#> 3   9158 19886  0  -1000.96                    
+#> 4   9157 18339  1   1546.93 772.5462 <2e-16 ***
+#> 5   9156 18334  1      5.33   2.6623 0.1028    
 #> ---
 #> Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
 rm(rain_lm_1, rain_lm_2, rain_lm_3, rain_lm_4, rain_lm_5)
@@ -667,8 +667,8 @@ rain_lm <- lm(log(ColiVal_ml) ~ Station + log1precip +
 ``` r
 summary(rain_lm)$coefficients[239:240,]
 #>                Estimate Std. Error  t value      Pr(>|t|)
-#> log1precip    0.2340800 0.01418122 16.50634  2.445749e-60
-#> log1precip_d1 0.3144545 0.01462851 21.49601 4.896196e-100
+#> log1precip    0.2341401 0.01418096 16.51088  2.273549e-60
+#> log1precip_d1 0.3144516 0.01462824 21.49620 4.876538e-100
 ```
 
 So conditions are more dependent on the prior day’s rainfall, which
@@ -1366,7 +1366,7 @@ kruskal.test(ColiVal_ml ~ Station, data = coli_data)
 #>  Kruskal-Wallis rank sum test
 #> 
 #> data:  ColiVal_ml by Station
-#> Kruskal-Wallis chi-squared = 908.35, df = 237, p-value < 2.2e-16
+#> Kruskal-Wallis chi-squared = 917.21, df = 237, p-value < 2.2e-16
 ```
 
 Although the Kruskal-Wallis test is not strictly a comparison of
